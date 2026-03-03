@@ -20,16 +20,18 @@
 
 import asyncio
 import concurrent.futures
+import json
 import re
 import sys
 from pathlib import Path
+from typing import Any, Union
 
 import yaml
 from crewai import Agent, Crew, Process, Task
 from crewai.mcp import MCPServerHTTP
 from crewai.mcp.filters import create_static_tool_filter
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 # 将项目根（crewai_mas_demo/）加入 sys.path，使 llm 包可被 import
 _TOOLS_DIR = Path(__file__).parent
@@ -120,9 +122,11 @@ class SkillLoaderInput(BaseModel):
         description="要加载的 Skill 名称，必须严格来自工具描述 XML 列表中的 <name> 值"
     )
     task_context: str = Field(
+        default="",
         description=(
             "如果是参考型skill，此项为空。\n"
-            "如果是任务型skill，此项为调用此 Skill 要完成的子任务的完整描述。包括：\n"
+            "如果是任务型skill，此项为调用此 Skill 要完成的子任务的完整描述（必须是字符串）。"
+            "可写自然语言描述，或 JSON 字符串。若传入对象会自动转为 JSON 字符串。包括：\n"
             "1. 子任务的概要描述\n"
             "2. 任务完成目标的预期输出，这里必须是结构化格式，通过一个json schema进行定义。各个字段的描述必须有明确的描述和示例.有两个必选字段errcode和errmsg，errcode为0表示成功，非0表示失败，errmsg为错误信息，成功时固定返回\"success\"，失败时必须包括错误信息、错误原因和建议的下一步解决方案。\n"
             "3. （可选）如果有完成任务的参考步骤和方法，可以提供对应描述\n"
@@ -130,8 +134,20 @@ class SkillLoaderInput(BaseModel):
             "5. （可选）如果完成任务有输出文件，则需要在json schema中定义输出文件的格式，并提供输出文件的本地路径,因为挂载配置:./workspace/output:/workspace/output:rw，所以要保证沙盒路径在/workspace/output/目录下, 且提供的本地路径会在对应的./workspace/output/目录下\n"
             "4. （可选）如果有其它特殊要求，可以在此处提供\n"
             "提供信息越完整，Skill 执行越精准。"
-        )
+        ),
     )
+
+    @field_validator("task_context", mode="before")
+    @classmethod
+    def task_context_to_str(cls, v: Union[str, dict, list, None]) -> str:
+        """LLM 常传 dict/list，此处统一转为字符串，避免 Pydantic string_type 校验失败。"""
+        if v is None:
+            return ""
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (dict, list)):
+            return json.dumps(v, ensure_ascii=False)
+        return str(v)
 
 
 # ── 核心工具 ─────────────────────────────────────────────────────────────────
@@ -142,10 +158,9 @@ class SkillLoaderTool(BaseTool):
     description: str = ""  # 在 __init__ 中动态构建
     args_schema: type[BaseModel] = SkillLoaderInput
 
-    # Pydantic 会把普通 dict 属性当作模型字段，用 PrivateAttr 或 ClassVar 绕开
-    # 这里用 model_config + 直接赋值实例属性的方式
-    _skill_registry: dict = {}
-    _instruction_cache: dict = {}
+    # Pydantic 会把普通 dict 属性当作模型字段，用 PrivateAttr 绕开
+    _skill_registry: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _instruction_cache: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     def __init__(self):
         super().__init__()
@@ -163,11 +178,29 @@ class SkillLoaderTool(BaseTool):
         主 Agent 看到工具 → 知道"什么场景用什么 Skill"，但不加载完整指令。
         """
         manifest_path = SKILLS_DIR / "load_skills.yaml"
-        with open(manifest_path) as f:
-            manifest = yaml.safe_load(f)
+        if not manifest_path.exists():
+            # 找不到配置文件时，保证工具仍可被安全加载
+            self.description = (
+                "SkillLoaderTool 已初始化，但当前未找到 load_skills.yaml，"
+                "因此暂时没有可用的 Skill。"
+            )
+            return
+
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = yaml.safe_load(f) or {}
+        except Exception as exc:  # noqa: BLE001
+            # YAML 解析失败时，避免整个工具崩溃
+            self.description = (
+                "SkillLoaderTool 初始化失败：解析 load_skills.yaml 出错，"
+                f"错误类型：{type(exc).__name__}，错误信息：{exc}"
+            )
+            return
+
+        skills_conf = manifest.get("skills") or []
 
         xml_parts = ["<available_skills>"]
-        for skill_conf in manifest["skills"]:
+        for skill_conf in skills_conf:
             if not skill_conf.get("enabled", True):
                 continue
             name = skill_conf["name"]

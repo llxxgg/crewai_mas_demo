@@ -186,6 +186,35 @@ export BAIDU_API_KEY="your-baidu-api-key-here"  # 可选
 # BAIDU_API_KEY=your-baidu-api-key-here
 ```
 
+### 启动 AIO-Sandbox 沙盒环境（用于 MCP / Skills 示例）
+
+部分示例（如课程14 MCP、课程16 Skills 生态）需要本地启动 AIO-Sandbox 容器，提供沙盒执行环境：
+
+```bash
+cd crewai_mas_demo
+
+# 启动沙盒（推荐后台运行）
+docker compose -f sandbox-docker-compose.yaml up -d
+
+# 不再需要时关闭沙盒
+docker compose -f sandbox-docker-compose.yaml down
+```
+
+说明：
+
+- 沙盒 MCP 端点：`http://localhost:8022/mcp`
+- 本地挂载目录：
+  - `./workspace/data` 挂载为沙盒内 `/workspace/data`（只读，输入文件）
+  - `./workspace/output` 挂载为沙盒内 `/workspace/output`（读写，输出文件）
+  - `./skills` 挂载为沙盒内 `/mnt/skills`（只读，Skill 资源）
+
+沙盒启动后，可以通过curl命令请求tools/list，检查是否成功：
+```
+curl -X POST http://localhost:8022/mcp/ \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":1}'
+```
 ### 运行示例
 
 #### 示例 1：原生 Agent 实现（课程02）
