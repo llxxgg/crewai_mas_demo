@@ -10,7 +10,7 @@
 与 m3l19 的区别：
   - 移除 FileWriterTool / FileReadTool（文件操作委托给沙盒 Sub-Crew）
   - 加入 SkillLoaderTool(sandbox_mount_desc=M3L20_SANDBOX_MOUNT_DESC)
-  - 继承 m3l19 的 Bootstrap / 剪枝 / 压缩纯函数，一行不改
+  - 继承 m3l19 的 Bootstrap / 剪枝 / 压缩纯函数，一行不改n
 
 运行前：
   1. 启动 m3l20 专用沙盒：docker compose -f sandbox-docker-compose.yaml up -d
@@ -63,10 +63,10 @@ M3L20_SANDBOX_MOUNT_DESC = (
     "   - ./workspace:/workspace:rw（可读写，memory-save 写记忆文件到这里）\n"
     "   - ../skills:/mnt/skills:rw（可读写，skill-creator 写 SKILL.md 到这里）\n\n"
     "2. 记忆文件读写规范：\n"
-    "   - 读取：用沙盒绝对路径 /workspace/{filename}（如 /workspace/user.md）\n"
+    f"   - 读取：用沙盒绝对路径 /workspace/<filename>（如 /workspace/user.md）\n"
     "   - 写入：同上，写前必须先 read 目标文件，确认无重复内容\n\n"
     "3. Skill 文件写入规范：\n"
-    "   - 目录：/mnt/skills/{skill-name}/SKILL.md\n"
+    f"   - 目录：/mnt/skills/<skill-name>/SKILL.md\n"
     "   - 注册：同时更新 /mnt/skills/load_skills.yaml\n\n"
     "4. 如遇依赖缺失，先在沙盒中安装再继续"
 )
@@ -265,7 +265,7 @@ class XiaoPawCrew:
     XiaoPaw 个人助手（第20课）
 
     与 m3l19 的关键区别：
-    - tools 只有 SkillLoaderTool（传入 M3L20_SANDBOX_MOUNT_DESC）+ BaiduSearchTool
+    - tools 只有 SkillLoaderTool（传入 M3L20_SANDBOX_MOUNT_DESC）
     - 移除 FileWriterTool / FileReadTool：文件操作全部委托给 AIO-Sandbox Sub-Crew
     - @before_llm_call hook 完全继承 m3l19，一行不改
     """
