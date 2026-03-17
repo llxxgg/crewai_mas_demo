@@ -90,7 +90,7 @@ def build_skill_crew(
     """
     sandbox_mcp = MCPServerHTTP(
         url=SANDBOX_MCP_URL,
-        tool_filter=SANDBOX_TOOL_FILTER,
+        #tool_filter=SANDBOX_TOOL_FILTER, # 暂时不使用工具过滤，因为目前工具都用得上
     )
 
     skill_llm = AliyunLLM(model="qwen3-max", region="cn", temperature=0.3)
@@ -227,6 +227,10 @@ class SkillLoaderTool(BaseTool):
             name = skill_conf["name"]
             skill_type = skill_conf.get("type", "task")
             skill_path = SKILLS_DIR / name
+            if not skill_path.exists():
+                continue
+            if not (skill_path / "SKILL.md").exists():
+                continue
 
             skill_md = (skill_path / "SKILL.md").read_text()
             desc = self._extract_frontmatter_description(skill_md)

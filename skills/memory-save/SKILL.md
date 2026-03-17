@@ -33,7 +33,7 @@ allowed-tools:
 | user | /workspace/user.md | 用户偏好、习惯、个人信息 |
 | agent | /workspace/agent.md | Agent 行为规范的增量更新 |
 | memory_index | /workspace/memory.md | 新增一条主题索引（只写指针，不写内容）|
-| topic | /workspace/memory_{name}.md | 某主题的详细内容（同时自动更新 memory.md）|
+| topic | /workspace/memory_<name>.md | 某主题的详细内容（同时自动更新 memory.md）|
 
 ## 步骤
 
@@ -59,7 +59,7 @@ allowed-tools:
 - 格式严格：一行一条，箭头用 `→`，文件名不含路径
 
 **target = topic：**
-- 写入 `/workspace/memory_{name}.md`（name 用英文小写下划线）
+- 写入 `/workspace/memory_<name>.md`（name 用英文小写下划线）
 - 然后在 `/workspace/memory.md` 对应 section 追加/更新该主题的索引条目
 - **两步必须都完成**，只写内容文件不更新索引，模型下次不会知道它存在
 

@@ -80,32 +80,32 @@ allowed-tools:
 将 JSON 分析转换为可读 Markdown，写入 `/workspace/memory_governance_report.md`：
 
 ```markdown
-# 记忆治理报告 — {日期}
+# 记忆治理报告 — <日期>
 
 ## memory.md 状态
-- 当前行数：{n} 行（上限 200 行）
-- 状态：{正常 / 警告 / 已超限}
+- 当前行数：<n> 行（上限 200 行）
+- 状态：<正常 / 警告 / 已超限>
 
 ## 发现的问题
 
-### 死链（共 {n} 条）
+### 死链（共 <n> 条）
 | 条目 | 原因 | 建议操作 |
 |------|------|---------|
 | 投资记录 → memory_invest.md | 文件不存在 | 删除此条目 |
 
-### 过期 Topic 文件（{n} 个）
+### 过期 Topic 文件（<n> 个）
 | 文件 | 最后更新 | 建议操作 |
 |------|---------|---------|
 | memory_2023_project.md | 480 天前 | 归档或删除 |
 
-### Skill 重叠（{n} 组）
+### Skill 重叠（<n> 组）
 | Skill 1 | Skill 2 | 建议 |
 |---------|---------|------|
 | analyze-stock | hk-stock-analysis | 合并为 analyze-hk-stock |
 
 ## 建议操作清单
-- [ ] 删除 memory.md 中 {n} 条死链
-- [ ] 归档 {n} 个过期 topic 文件到 /workspace/archive/
+- [ ] 删除 memory.md 中 <n> 条死链
+- [ ] 归档 <n> 个过期 topic 文件到 /workspace/archive/
 - [ ] 合并重叠 Skill
 ```
 
