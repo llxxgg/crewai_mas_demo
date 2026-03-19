@@ -12,7 +12,7 @@
   - 继承 m3l20 的 Bootstrap / 剪枝 / 压缩 / SkillLoaderTool，一行不改
 
 运行前：
-  1. 启动 pgvector：docker compose up -d
+  1. 启动 pgvector：docker compose -f pgvector-docker-compose.yaml up -d
   2. 启动 m3l20 沙盒（search_memory Skill 需要）：
      docker compose -f ../m3l20/sandbox-docker-compose.yaml up -d
   3. 设置环境变量：QWEN_API_KEY=xxx
@@ -51,7 +51,7 @@ from indexer import async_index_turn                 # noqa: E402
 
 WORKSPACE_DIR = _M3L21_DIR.parent / "m3l20" / "workspace"   # 复用 m3l20 workspace
 SESSIONS_DIR  = WORKSPACE_DIR / "sessions"
-SKILLS_DIR    = _M3L21_DIR / "skills"                        # 💡 m3l21 自己的 skills 目录
+SKILLS_DIR    = _M3L21_DIR / "skills"                        # 兼容保留：当前实际由 ../skills 挂载并提供 search_memory
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,14 +62,13 @@ M3L21_SANDBOX_MOUNT_DESC = (
     "1. 所有的操作必须在沙盒中执行，不得操作本地文件系统。\n"
     "   当前已挂载的目录：\n"
     "   - ./workspace:/workspace:rw（可读写，memory-save 写记忆文件到这里）\n"
-    "   - ../skills:/mnt/skills:ro（只读，m3l20 共享 skills）\n"
-    "   - ./m3l21/skills:/mnt/skills_21:ro（只读，m3l21 search_memory skill）\n\n"
+    "   - ../skills:/mnt/skills:ro（只读，共享所有 skills，包括 search_memory）\n\n"
     "2. 记忆文件读写规范：\n"
     "   - 读取：用沙盒绝对路径 /workspace/<filename>\n"
     "   - 写入：同上，写前必须先 read 目标文件，确认无重复内容\n\n"
     "3. search_memory Skill 调用规范：\n"
-    "   - Skill 文档：/mnt/skills_21/search_memory/SKILL.md\n"
-    "   - 执行脚本：python /mnt/skills_21/search_memory/scripts/search.py\n"
+    "   - Skill 文档：/mnt/skills/search_memory/SKILL.md\n"
+    "   - 执行脚本：python /mnt/skills/search_memory/scripts/search.py\n"
     "   - 需要环境变量：MEMORY_DB_DSN、QWEN_API_KEY\n\n"
     "4. 如遇依赖缺失，先在沙盒中安装再继续"
 )
@@ -171,7 +170,8 @@ _SUMMARY_PROMPT = """\
 
 
 def _summarize_chunk(messages: list[dict]) -> str:
-    summary_llm = LLM(model="qwen3-turbo")
+    # 使用与主 Agent 相同的 qwen3-max，避免环境中找不到 qwen3-turbo 导致压缩失败
+    summary_llm = LLM(model="qwen3-max")
     history = "\n".join(
         f"{m.get('role', '')}: {str(m.get('content', ''))[:300]}" for m in messages
     )
@@ -332,7 +332,7 @@ DEMO_ROUNDS = [
     ),
     (
         "语义搜索（跨 session 召回）",
-        "我之前让你查过一个向量数据库的对比，帮我找一下那次的结论。",
+        "我之前让你查过一个向量数据库的对比，帮我找一下那次的结论。不要只凭当前对话上下文回忆，必须调用 search_memory Skill，从 pgvector 历史记忆中检索并给出结果。",
     ),
 ]
 

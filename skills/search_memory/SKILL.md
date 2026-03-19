@@ -55,7 +55,7 @@ version: "1.0"
 调用 `scripts/search.py`，通过命令行参数传入搜索条件：
 
 ```bash
-python /mnt/skills_21/search_memory/scripts/search.py \
+python /mnt/skills/search_memory/scripts/search.py \
   --query "用户的搜索意图" \
   --tags "工作,文件处理" \
   --days 7 \
@@ -97,17 +97,17 @@ JSON 数组，每条记录包含：
 
 ### 示例1：语义搜索（用户问"上次那个航班"）
 ```bash
-python /mnt/skills_21/search_memory/scripts/search.py --query "航班查询" --mode vector --limit 3
+python /mnt/skills/search_memory/scripts/search.py --query "航班查询" --mode vector --limit 3
 ```
 
 ### 示例2：混合搜索（"上周帮我处理的文件"）
 ```bash
-python /mnt/skills_21/search_memory/scripts/search.py --query "文件处理" --tags "文件处理" --days 7 --mode hybrid
+python /mnt/skills/search_memory/scripts/search.py --query "文件处理" --tags "文件处理" --days 7 --mode hybrid
 ```
 
 ### 示例3：全文搜索（精确关键字）
 ```bash
-python /mnt/skills_21/search_memory/scripts/search.py --query "PDF转换" --mode fulltext --limit 5
+python /mnt/skills/search_memory/scripts/search.py --query "PDF转换" --mode fulltext --limit 5
 ```
 
 ---
@@ -121,3 +121,4 @@ python /mnt/skills_21/search_memory/scripts/search.py --query "PDF转换" --mode
   2. 再去掉 `--tags` 限制（标签可能不匹配）
   3. 最后切换到 `--mode vector` 纯语义搜索（关键字可能不准）
 - 如果需要查看完整回复内容，`assistant_reply` 字段已包含
+

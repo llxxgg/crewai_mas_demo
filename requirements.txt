@@ -7,3 +7,6 @@ requests==2.32.5
 
 # 数据验证（CrewAI 依赖，但明确列出以确保兼容性）
 pydantic==2.11.10
+
+# PostgreSQL 客户端（用于 m3l21 pgvector 索引）
+psycopg2-binary==2.9.10
