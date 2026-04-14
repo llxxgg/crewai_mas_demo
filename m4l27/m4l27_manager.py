@@ -2,20 +2,14 @@
 课程：27｜Human as 甲方
 示例文件：m4l27_manager.py
 
-Manager 三个 Crew：
-  RequirementsDiscoveryCrew  新增：需求澄清，用 requirements-discovery skill 发问，写 requirements.md
-  ManagerAssignCrew          复用 L26：读 SOP，向 PM 发送 task_assign
+Manager 五个 Crew：
+  RequirementsDiscoveryCrew  新增：需求澄清，用 requirements-discovery skill，写 requirements.md
+  SOPCreatorCrew             新增（时点A）：与人协作设计 SOP，写 shared/sop/{name}.md
+  SOPSelectorCrew            新增（时点B）：从 SOP 库选最匹配的 SOP，写 active_sop.md
+  ManagerAssignCrew          复用 L26：读 active_sop.md，向 PM 发送 task_assign
   ManagerReviewCrew          复用 L26：读 PM 回邮，验收产品文档
 
-与 m4l26_manager.py 的复用关系：
-  - build_bootstrap_prompt / load_session_ctx / save_session_ctx / append_session_raw：完全复用
-  - SkillLoaderTool / prune_tool_results / maybe_compress：完全复用
-  - ManagerAssignCrew / ManagerReviewCrew：结构完全复用，沙盒描述更新为 m4l27 路径
-
-第27课新增：
-  - RequirementsDiscoveryCrew：使用 requirements-discovery skill，写 requirements.md
-  - 沙盒挂载新增 /mnt/shared/sop 目录（Manager 读取 SOP 文件）
-  - 单一接口约束：Manager 不直接写 human.json；由 run.py 编排
+路径常量统一从 m4l27_config.py import，不在此处重复计算。
 """
 
 from __future__ import annotations
@@ -51,13 +45,12 @@ from m3l20.m3l20_file_memory import (                # noqa: E402
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 路径常量
+# 路径常量（从 m4l27_config.py 统一 import）
 # ─────────────────────────────────────────────────────────────────────────────
+from m4l27_config import MANAGER_DIR, SHARED_DIR, MAILBOXES_DIR, SOP_DIR  # noqa: E402
 
-WORKSPACE_DIR  = _M4L27_DIR / "workspace" / "manager"
-SESSIONS_DIR   = WORKSPACE_DIR / "sessions"
-SHARED_DIR     = _M4L27_DIR / "workspace" / "shared"
-MAILBOXES_DIR  = SHARED_DIR / "mailboxes"
+WORKSPACE_DIR = MANAGER_DIR
+SESSIONS_DIR  = WORKSPACE_DIR / "sessions"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 沙盒挂载描述（Manager）
@@ -73,7 +66,7 @@ M4L27_MANAGER_SANDBOX_MOUNT_DESC = (
     "   - 个人区读写：/workspace/<filename>\n"
     "   - 需求文档：/mnt/shared/needs/requirements.md（Manager 可写）\n"
     "   - 产品文档：/mnt/shared/design/product_spec.md（只读，PM 负责写入）\n"
-    "   - SOP 目录：/mnt/shared/sop/（只读，Manager 读取 SOP 文件）\n"
+    "   - SOP 目录：/mnt/shared/sop/（可读写，Manager 可写入 draft_*.md 草稿和 active_sop.md）\n"
     "   - 邮箱：/mnt/shared/mailboxes/（通过 mailbox-ops skill 操作）\n\n"
     "3. 参考型 Skill（type: reference）：内容直接注入上下文，无需沙盒\n\n"
     "4. 如遇依赖缺失，先在沙盒中安装再继续"
@@ -237,9 +230,10 @@ class ManagerAssignCrew(_SessionMixin):
                 "1. 【读SOP】调用 skill_loader 工具，参数：skill_name='memory-save'，\n"
                 "   task_context 中包含：\n"
                 "   {\n"
-                "     \"path\": \"/mnt/shared/sop/product_design_sop.md\",\n"
+                "     \"path\": \"/mnt/shared/sop/active_sop.md\",\n"
                 "     \"action\": \"read\"\n"
                 "   }\n"
+                "   （active_sop.md 是本次任务选定的 SOP 副本，由 SOPSelectorCrew 写入）\n"
                 "   等待 SOP 读取结果\n"
                 "2. 【读需求】调用 skill_loader 工具，参数：skill_name='memory-save'，\n"
                 "   task_context 中包含：\n"
@@ -346,8 +340,147 @@ class ManagerReviewCrew(_SessionMixin):
 # 公共辅助函数
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Crew 4：SOP 制定（时点A，独立于任务执行）
+# ─────────────────────────────────────────────────────────────────────────────
+
+@CrewBase
+class SOPCreatorCrew(_SessionMixin):
+    """
+    Manager 与人协作设计 SOP 模板（时点A）。
+
+    核心教学点（对应第27课 P4）：
+    - SOP 不是程序员写死的静态文档，而是人机协作的产物
+    - Checkpoint 在这里设计进去，而不是执行时拍脑袋
+    - 草稿写入 draft_{name}.md，人确认后去掉前缀
+
+    通过 sop-creator skill（reference 类型）注入 SOP 设计四要素框架。
+    """
+
+    def __init__(self, session_id: str, sop_name: str = "product_design") -> None:
+        self.session_id = session_id
+        self.sop_name   = sop_name
+        self._init_session_state(SESSIONS_DIR)
+
+    @agent
+    def manager_agent(self) -> Agent:
+        return self._build_agent(
+            role = "项目经理（Manager）",
+            goal = "根据任务背景，设计一份完整可执行的 SOP，明确角色分工、步骤清单和 Checkpoint 位置",
+        )
+
+    @task
+    def create_sop_task(self) -> Task:
+        draft_path = f"/mnt/shared/sop/draft_{self.sop_name}.md"
+        return Task(
+            description = "{user_request}\n\n{revision_context}",
+            expected_output = (
+                "完成以下步骤：\n"
+                "1. 调用 skill_loader 工具（skill_name='sop-creator'，task_context 留空），\n"
+                "   获取 SOP 设计四要素框架（角色分工/步骤清单/Checkpoint/质量标准）\n"
+                "2. 若 revision_context 不为空，根据人类反馈修改上一版草稿；\n"
+                "   否则按框架全新设计 SOP\n"
+                "3. 调用 skill_loader 工具（skill_name='memory-save'），在 task_context 中说明：\n"
+                f"   - 将草稿写入路径：{draft_path}\n"
+                "   - 写入方式：sandbox_file_operations(action=write)\n"
+                "   - 文档必须包含：适用场景 / 角色分工 / 执行步骤 / Checkpoint / 质量标准\n"
+                "   注意：skill_loader 是唯一可用工具\n"
+                f"确认草稿写入后输出：「SOP草稿已完成，路径：{draft_path}」"
+            ),
+            agent = self.manager_agent(),
+        )
+
+    @crew
+    def crew(self) -> Crew:
+        return Crew(agents=self.agents, tasks=self.tasks, verbose=True)
+
+    @before_llm_call
+    def before_llm_hook(self, context: LLMCallHookContext) -> bool | None:
+        if not self._session_loaded:
+            self._restore_session(context)
+            self._session_loaded = True
+        self._last_msgs = context.messages
+        prune_tool_results(context.messages)
+        maybe_compress(context.messages, context)
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Crew 5：SOP 选择（时点B，任务执行阶段）
+# ─────────────────────────────────────────────────────────────────────────────
+
+@CrewBase
+class SOPSelectorCrew(_SessionMixin):
+    """
+    Manager 从 SOP 库选出最匹配当前任务的 SOP 模板（时点B）。
+
+    核心教学点（对应第27课 P4）：
+    - SOP 选择决策由 Manager 做，透明可审计
+    - 覆盖写入 active_sop.md，解耦于源文件（后续更新不影响进行中的任务）
+    - SOP 库只有一个模板时直接选择，无需强行比较
+
+    通过 sop-selector skill（reference 类型）注入选择框架。
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        self._init_session_state(SESSIONS_DIR)
+
+    @agent
+    def manager_agent(self) -> Agent:
+        return self._build_agent(
+            role = "项目经理（Manager）",
+            goal = "从 SOP 库中选出最匹配当前任务需求的 SOP，并将其写入 active_sop.md",
+        )
+
+    @task
+    def select_sop_task(self) -> Task:
+        return Task(
+            description = "{user_request}",
+            expected_output = (
+                "完成以下步骤：\n"
+                "1. 调用 skill_loader 工具（skill_name='sop-selector'，task_context 留空），\n"
+                "   获取 SOP 选择三步框架（需求特征分析/候选评分/推荐输出）\n"
+                "2. 调用 skill_loader 工具（skill_name='memory-save'），在 task_context 中说明：\n"
+                "   读取 /mnt/shared/needs/requirements.md，了解当前任务需求\n"
+                "3. 调用 skill_loader 工具（skill_name='memory-save'），在 task_context 中说明：\n"
+                "   列出 /mnt/shared/sop/ 目录下所有 .md 文件\n"
+                "   （忽略 draft_ 前缀的草稿文件和 active_sop.md）\n"
+                "4. 按 sop-selector 框架评分，选出最匹配的 SOP\n"
+                "   注意：如果 SOP 库只有一个文件，直接选择该文件，无需比较\n"
+                "5. 调用 skill_loader 工具（skill_name='memory-save'），在 task_context 中说明：\n"
+                "   将选中的 SOP 完整内容写入 /mnt/shared/sop/active_sop.md\n"
+                "   写入方式：sandbox_file_operations(action=write)，始终覆盖写入\n"
+                "   注意：skill_loader 是唯一可用工具\n"
+                "输出：「已选择 [SOP文件名]，理由：[一句话理由]，已写入 active_sop.md」"
+            ),
+            agent = self.manager_agent(),
+        )
+
+    @crew
+    def crew(self) -> Crew:
+        return Crew(agents=self.agents, tasks=self.tasks, verbose=True)
+
+    @before_llm_call
+    def before_llm_hook(self, context: LLMCallHookContext) -> bool | None:
+        if not self._session_loaded:
+            self._restore_session(context)
+            self._session_loaded = True
+        self._last_msgs = context.messages
+        prune_tool_results(context.messages)
+        maybe_compress(context.messages, context)
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 公共辅助函数
+# ─────────────────────────────────────────────────────────────────────────────
+
 def save_session(
-    crew_instance: RequirementsDiscoveryCrew | ManagerAssignCrew | ManagerReviewCrew,
+    crew_instance: (
+        RequirementsDiscoveryCrew | SOPCreatorCrew | SOPSelectorCrew
+        | ManagerAssignCrew | ManagerReviewCrew
+    ),
     session_id: str,
 ) -> None:
     """保存 session 上下文（复用 m3l20 逻辑）"""

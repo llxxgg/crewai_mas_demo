@@ -2,20 +2,28 @@
 课程：27｜Human as 甲方
 示例文件：m4l27_run.py
 
-演示：4步任务链 + 2个人工确认节点（步骤1支持多轮需求澄清）
+演示：5步任务链 + 3个人工确认节点（步骤1支持多轮需求澄清）
   步骤1（Manager）：需求澄清 → 写 requirements.md（最多 MAX_CLARIFICATION_ROUNDS 轮）
   [人工确认节点1] run.py 以 manager 身份写 human.json:needs_confirm → 等待用户确认
                   用户可输入补充意见触发下一轮修订，直到满意为止
-  步骤2（Manager）：读SOP → 向 PM 发送 task_assign
-  步骤3（PM）：读邮件 → 写产品文档 → 发 manager.json:task_done
-  [人工确认节点2] run.py 以 manager 身份写 human.json:checkpoint_request → 等待用户确认
-  步骤4（Manager）：读邮件 → 验收产品文档 → 保存验收结论
+  步骤2（Manager）：从 SOP 库选出最匹配的 SOP → 写 active_sop.md（SOPSelectorCrew）
+  [人工确认节点2] run.py 以 manager 身份写 human.json:sop_confirm → 等待用户确认 SOP 选择
+  步骤3（Manager）：读 active_sop.md → 向 PM 发送 task_assign
+  步骤4（PM）：读邮件 → 写产品文档 → 发 manager.json:task_done
+  [人工确认节点3] run.py 以 manager 身份写 human.json:checkpoint_request → 等待用户确认
+  步骤5（Manager）：读邮件 → 验收产品文档 → 保存验收结论
+
+前置条件：
+  - SOP 库（shared/sop/）至少有一个 SOP 模板
+    否则先运行 m4l27_sop_setup.py 制定 SOP
+  - 每次运行自动清理 active_sop.md，由 SOPSelectorCrew 重新选择
 
 核心教学点（对应第27课）：
   - 单一接口原则：human.json 只由 run.py（以 manager 身份）写入，LLM Agent 不直接接触
   - 人工确认节点：run.py 控制时机，不由 LLM 决定何时打扰人
   - wait_for_human()：用 FileLock 读 human.json，模拟异步人机交互
   - 多轮澄清：编排器控制循环，LLM 无状态，Session hook 负责历史恢复
+  - 三态状态机：mark_done_all_in_progress 在 Crew 成功后确认消息已处理
 """
 
 from __future__ import annotations
@@ -45,11 +53,14 @@ if sys.path.index(str(_M4L27_DIR)) > sys.path.index(str(_PROJECT_ROOT)):
     sys.path.insert(0, str(_M4L27_DIR))
 
 from crewai.hooks import clear_before_llm_call_hooks  # noqa: E402
-from tools.mailbox_ops import send_mail                # noqa: E402
-
-SHARED_DIR    = _M4L27_DIR / "workspace" / "shared"
-MAILBOXES_DIR = SHARED_DIR / "mailboxes"
-DESIGN_DIR    = SHARED_DIR / "design"
+from tools.mailbox_ops import send_mail, mark_done_all_in_progress  # noqa: E402
+from m4l27_config import (                             # noqa: E402
+    SHARED_DIR,
+    MAILBOXES_DIR,
+    DESIGN_DIR,
+    SOP_DIR,
+    ACTIVE_SOP_FILE,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,9 +130,13 @@ def wait_for_human(
     )
 
     if target is None:
-        print(f"\n[debug] ⚠️  human.json 中未找到未读的 '{expected_type}' 消息")
-        print(f"[debug] 实际内容：{json.dumps(messages, ensure_ascii=False, indent=2)}")
-        return HumanDecision(confirmed=False)
+        print(f"\n[ERROR] ⚠️  human.json 中未找到未读的 '{expected_type}' 消息")
+        print(f"[ERROR] 实际内容：{json.dumps(messages, ensure_ascii=False, indent=2)}")
+        print(f"[ERROR] 这不是人类拒绝——而是程序错误，请检查 send_mail 是否成功执行")
+        raise RuntimeError(
+            f"wait_for_human: 未找到类型为 '{expected_type}' 的未读消息。"
+            f"请确认 send_mail 在 wait_for_human 之前被成功调用。"
+        )
 
     # ── 步骤2：打印消息，等待用户输入（锁已释放）────────────────────────────
     print(f"\n{'='*60}")
@@ -213,6 +228,49 @@ def check_requirements_exists() -> bool:
     return (SHARED_DIR / "needs" / "requirements.md").exists()
 
 
+def check_sop_exists(sop_dir: Path | None = None) -> bool:
+    """
+    检查 active_sop.md 是否存在（SOPSelectorCrew 已成功写入的标志）。
+
+    此函数在步骤2（SOPSelectorCrew）运行之后调用，用于验证 Crew 是否成功写入
+    active_sop.md。与 check_sop_library_nonempty() 不同：
+    - check_sop_library_nonempty()：检查 SOP 模板库是否有可选的 SOP（运行前的预检）
+    - check_sop_exists()：检查本次任务的 SOP 是否已选定（步骤2之后的验证）
+
+    Args:
+        sop_dir: SOP 目录路径（None 时使用全局 SOP_DIR）。
+                 传入参数主要用于单元测试，生产代码使用默认值即可。
+
+    Returns:
+        True 表示 SOPSelectorCrew 已成功写入 active_sop.md；
+        False 表示 SOPSelectorCrew 未能写入，任务无法继续。
+    """
+    _dir = sop_dir if sop_dir is not None else SOP_DIR
+    return (_dir / "active_sop.md").exists()
+
+
+def check_sop_library_nonempty(sop_dir: Path | None = None) -> bool:
+    """
+    检查 SOP 模板库是否有可供选择的 SOP 文件（运行前的预检）。
+
+    扫描 SOP_DIR，忽略：
+    - draft_ 前缀的草稿文件（未确认的草稿）
+    - active_sop.md（上次选中的副本，非模板）
+
+    Returns:
+        True 表示 SOP 库至少有一个可用模板；
+        False 表示 SOP 库为空，无法运行 SOPSelectorCrew。
+    """
+    _dir = sop_dir if sop_dir is not None else SOP_DIR
+    if not _dir.exists():
+        return False
+    templates = [
+        f for f in _dir.glob("*.md")
+        if not f.name.startswith("draft_") and f.name != "active_sop.md"
+    ]
+    return len(templates) > 0
+
+
 def check_pm_inbox_has_task_assign() -> bool:
     pm_inbox = MAILBOXES_DIR / "pm.json"
     if not pm_inbox.exists():
@@ -254,6 +312,7 @@ def check_human_confirmed(expected_type: str) -> bool:
 def run_demo(initial_request: str = "") -> None:
     from m4l27_manager import (  # 延迟导入，避免在测试中加载 CrewAI
         RequirementsDiscoveryCrew,
+        SOPSelectorCrew,
         ManagerAssignCrew,
         ManagerReviewCrew,
         save_session as manager_save,
@@ -268,7 +327,19 @@ def run_demo(initial_request: str = "") -> None:
     print(f"  M4L27 Human as 甲方演示  |  session: {session_id[:8]}...")
     print(f"{'='*60}\n")
 
-    # ── 步骤1：Manager 多轮需求澄清 ──────────────────────────────────────
+    # ── 预检：SOP 库不能为空 ─────────────────────────────────────────────────
+    if not check_sop_library_nonempty():
+        print("❌ 前置条件未满足：shared/sop/ 目录中没有可用的 SOP 模板")
+        print("   请先运行 m4l27_sop_setup.py 制定 SOP，或将 SOP 文件放入 workspace/shared/sop/ 目录")
+        print("   （course 自带示例 SOP 应已存在，请检查该目录）")
+        return
+
+    # ── 每次运行清理上次的 active_sop.md，确保本次重新选择 ──────────────────
+    if ACTIVE_SOP_FILE.exists():
+        ACTIVE_SOP_FILE.unlink()
+        print("  [清理] 已删除上次的 active_sop.md，本次将重新选择 SOP\n")
+
+    # ── 步骤1：Manager 多轮需求澄清 ──────────────────────────────────────────
     # 控制权在编排器：循环由 run_demo() 驱动，LLM 每轮无状态执行单轮任务
     # Session 复用：相同 session_id 传给每轮，@before_llm_call hook 自动恢复历史
     feedback_history: list[str] = []
@@ -329,40 +400,88 @@ def run_demo(initial_request: str = "") -> None:
             print("  提示：可通过 MAX_CLARIFICATION_ROUNDS 环境变量增加最大轮次")
             return
 
-    # ── 步骤2：Manager 分配任务 ────────────────────────────────────────────
-    print("【步骤2】Manager 按SOP分配任务给PM...（ManagerAssignCrew）\n")
+    # ── 步骤2：Manager 从 SOP 库选出最匹配的 SOP ───────────────────────────
+    print("【步骤2】Manager 选择 SOP...（SOPSelectorCrew）\n")
+    clear_before_llm_call_hooks()
+    selector_crew = SOPSelectorCrew(session_id=session_id)
+    result2 = selector_crew.crew().kickoff(inputs={
+        "user_request": (
+            "请读取 /mnt/shared/needs/requirements.md，"
+            "从 /mnt/shared/sop/ 目录选出最匹配的 SOP，"
+            "将选中 SOP 的完整内容写入 /mnt/shared/sop/active_sop.md"
+        )
+    })
+    manager_save(selector_crew, session_id)
+    result2_text = getattr(result2, "raw", str(result2))
+    print(f"\n步骤2 输出：{result2_text[:300]}...\n")
+
+    if not check_sop_exists():
+        print("⚠️  步骤2未完成：active_sop.md 未生成，终止运行")
+        print("  提示：SOP 库可能为空，请先运行 m4l27_sop_setup.py 制定 SOP")
+        return
+    print("✅ 步骤2检查通过：active_sop.md 已生成\n")
+
+    # 人工确认节点2：SOP 选择确认
+    send_mail(
+        MAILBOXES_DIR,
+        to="human",
+        from_="manager",
+        type_="sop_confirm",
+        subject="SOP 已选定，请确认后继续",
+        content=(
+            f"Manager 已选择 SOP，写入 shared/sop/active_sop.md\n"
+            f"SOP 选择结论：{result2_text[:200]}\n"
+            f"确认后将按此 SOP 执行任务。"
+        ),
+    )
+
+    decision2 = wait_for_human(
+        MAILBOXES_DIR / "human.json",
+        expected_type="sop_confirm",
+        step_label="SOP 选择确认",
+        allow_feedback=False,   # SOP 确认为单轮，如需修改请重新选择
+    )
+    if not decision2.confirmed:
+        print("  SOP 未确认，终止运行（如需重新选择，修改 SOP 库后重新运行）")
+        return
+    print("✅ SOP 选择已确认\n")
+
+    # ── 步骤3：Manager 按 SOP 分配任务 ─────────────────────────────────────
+    print("【步骤3】Manager 按SOP分配任务给PM...（ManagerAssignCrew）\n")
     clear_before_llm_call_hooks()
     assign_crew = ManagerAssignCrew(session_id=session_id)
-    result2 = assign_crew.crew().kickoff(inputs={
-        "user_request": "请读取需求文档和产品设计SOP，向PM发送产品文档设计任务"
+    result3 = assign_crew.crew().kickoff(inputs={
+        "user_request": "请读取需求文档和 active_sop.md，向PM发送产品文档设计任务"
     })
     manager_save(assign_crew, session_id)
-    print(f"\n步骤2 输出：{result2}\n")
+    print(f"\n步骤3 输出：{result3}\n")
 
     if not check_pm_inbox_has_task_assign():
-        print("⚠️  步骤2未完成：PM 邮箱中未找到 task_assign，终止运行")
+        print("⚠️  步骤3未完成：PM 邮箱中未找到 task_assign，终止运行")
         return
-    print("✅ 步骤2检查通过：PM 邮箱已有任务分配邮件\n")
+    print("✅ 步骤3检查通过：PM 邮箱已有任务分配邮件\n")
 
-    # ── 步骤3：PM 执行任务 ─────────────────────────────────────────────────
-    print("【步骤3】PM 撰写产品文档...（PMExecuteCrew）\n")
+    # ── 步骤4：PM 执行任务 ─────────────────────────────────────────────────
+    print("【步骤4】PM 撰写产品文档...（PMExecuteCrew）\n")
     clear_before_llm_call_hooks()
     pm_crew = PMExecuteCrew(session_id=session_id)
-    result3 = pm_crew.crew().kickoff(inputs={
+    result4 = pm_crew.crew().kickoff(inputs={
         "user_request": "请读取邮箱中的任务，根据需求文档撰写产品规格文档，完成后通知Manager"
     })
     pm_save(pm_crew, session_id)
-    print(f"\n步骤3 输出：{result3}\n")
+    print(f"\n步骤4 输出：{result4}\n")
 
     if not check_product_spec_exists():
-        print("⚠️  步骤3未完成：产品文档未生成，终止运行")
+        print("⚠️  步骤4未完成：产品文档未生成，终止运行")
         return
     if not check_manager_inbox_has_task_done():
-        print("⚠️  步骤3未完成：Manager 邮箱中未找到 task_done，终止运行")
+        print("⚠️  步骤4未完成：Manager 邮箱中未找到 task_done，终止运行")
         return
-    print("✅ 步骤3检查通过：产品文档已生成，Manager 收到完成通知\n")
+    # PM 的 task_assign 消息已被处理，标记为 done（三态状态机确认）
+    mark_done_all_in_progress(MAILBOXES_DIR, "pm")
+    print("✅ 步骤4检查通过：产品文档已生成，Manager 收到完成通知\n")
 
-    # ── 人工确认节点2：设计文档 Checkpoint ────────────────────────────────
+    # ── 人工确认节点3：设计文档 Checkpoint ────────────────────────────────
     # 单一接口原则：PM 只发给 Manager，由 run.py（Manager 身份）转告人类
     send_mail(
         MAILBOXES_DIR,
@@ -373,23 +492,25 @@ def run_demo(initial_request: str = "") -> None:
         content="产品文档路径：shared/design/product_spec.md（请打开查阅后确认）",
     )
 
-    confirmed2 = wait_for_human(
+    confirmed3 = wait_for_human(
         MAILBOXES_DIR / "human.json",
         expected_type="checkpoint_request",
         step_label="设计文档 Checkpoint",
     )
-    if not confirmed2.confirmed:
+    if not confirmed3.confirmed:
         return
 
-    # ── 步骤4：Manager 验收 ────────────────────────────────────────────────
-    print("【步骤4】Manager 验收中...（ManagerReviewCrew）\n")
+    # ── 步骤5：Manager 验收 ────────────────────────────────────────────────
+    print("【步骤5】Manager 验收中...（ManagerReviewCrew）\n")
     clear_before_llm_call_hooks()
     review_crew = ManagerReviewCrew(session_id=session_id)
-    result4 = review_crew.crew().kickoff(inputs={
+    result5 = review_crew.crew().kickoff(inputs={
         "user_request": "请读取邮箱中的完成通知，验收产品文档并保存验收结论"
     })
     manager_save(review_crew, session_id)
-    print(f"\n步骤4 输出：{result4}\n")
+    # Manager 的 task_done 消息已被处理，标记为 done
+    mark_done_all_in_progress(MAILBOXES_DIR, "manager")
+    print(f"\n步骤5 输出：{result5}\n")
 
     print(f"\n{'='*60}")
     print("  ✅ 演示完成！")

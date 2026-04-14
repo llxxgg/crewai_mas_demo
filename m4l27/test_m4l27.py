@@ -12,12 +12,19 @@ test_m4l27.py — 单元测试 + 集成测试
   T_unit_7_build_inputs_round1        _build_clarification_inputs 首轮不含 revision_context
   T_unit_8_build_inputs_round2        _build_clarification_inputs 后续轮含历史反馈
   T_unit_9_build_inputs_escape        反馈中含 {} 时自动转义
+  T_unit_10_send_creates_unread       agent 邮箱写入时 status=unread + processing_since=None
+  T_unit_11_read_marks_in_progress    read_inbox 取走消息后 status=in_progress
+  T_unit_12_mark_done_confirms        mark_done 将 in_progress 标记为 done
+  T_unit_13_reset_stale_restores      reset_stale 将超时 in_progress 恢复为 unread
+  T_unit_14_check_sop_false           active_sop.md 不存在时 check_sop_exists 返回 False
+  T_unit_15_check_sop_true            active_sop.md 存在时 check_sop_exists 返回 True
 
 集成测试（需要 LLM，标记 @needs_llm）：
   T_int_1_requirements_generated  RequirementsDiscoveryCrew 运行后 requirements.md 存在
   T_int_2_task_assign_sent        ManagerAssignCrew 运行后 pm.json 有 task_assign
   T_int_3_product_spec_exists     PMExecuteCrew 运行后 product_spec.md 存在
   T_int_4_review_result_exists    ManagerReviewCrew 运行后 review_result.md 存在
+  T_int_5_sop_creator             SOPCreatorCrew 运行后 draft_*.md 存在
 """
 
 from __future__ import annotations
@@ -209,15 +216,13 @@ class TestWaitForHuman:
         messages = json.loads(human_inbox.read_text(encoding="utf-8"))
         assert messages[0].get("human_feedback") == "希望增加性能指标", "反馈应写入消息记录"
 
-    def test_wait_returns_false_when_no_message(self, tmp_mailboxes: Path) -> None:
-        """无消息时返回 confirmed=False"""
+    def test_wait_raises_when_no_message(self, tmp_mailboxes: Path) -> None:
+        """无消息时抛出 RuntimeError（区别于用户手动拒绝，防止静默失败吞掉程序错误）"""
         from m4l27_run import wait_for_human
 
         human_inbox = tmp_mailboxes / "human.json"
-        with patch("builtins.input", return_value="y"):
-            result = wait_for_human(human_inbox, expected_type="needs_confirm", step_label="需求确认")
-
-        assert result.confirmed is False
+        with pytest.raises(RuntimeError, match="未找到类型为"):
+            wait_for_human(human_inbox, expected_type="needs_confirm", step_label="需求确认")
 
 
 class TestBuildClarificationInputs:
@@ -260,6 +265,123 @@ class TestBuildClarificationInputs:
         # 验证没有未转义的单花括号包住 json（转义前的原始形式）
         import re
         assert not re.search(r'(?<!\{)\{json\}(?!\})', rc), "不应有未转义的 {json}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 单元测试：三态状态机（T_unit_10~13）
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestThreeStateMachine:
+    """T_unit_10~13: agent 邮箱三态状态机（status: unread → in_progress → done）"""
+
+    def test_send_creates_unread_status(self, tmp_mailboxes: Path) -> None:
+        """T_unit_10: send_mail 写入 agent 邮箱时 status=unread，processing_since=None"""
+        from tools.mailbox_ops import STATUS_UNREAD
+
+        send_mail(
+            tmp_mailboxes,
+            to="pm",
+            from_="manager",
+            type_="task_assign",
+            subject="测试任务",
+            content="请设计产品文档",
+        )
+        messages = json.loads((tmp_mailboxes / "pm.json").read_text(encoding="utf-8"))
+        assert len(messages) == 1
+        assert messages[0]["status"] == STATUS_UNREAD
+        assert messages[0]["processing_since"] is None
+
+    def test_read_inbox_marks_in_progress(self, tmp_mailboxes: Path) -> None:
+        """T_unit_11: read_inbox 取走消息后磁盘状态变为 in_progress，processing_since 有值"""
+        from tools.mailbox_ops import STATUS_IN_PROGRESS, read_inbox
+
+        send_mail(
+            tmp_mailboxes,
+            to="pm",
+            from_="manager",
+            type_="task_assign",
+            subject="t",
+            content="c",
+        )
+        result = read_inbox(tmp_mailboxes, "pm")
+        assert len(result) == 1
+        assert result[0]["status"] == STATUS_IN_PROGRESS
+
+        on_disk = json.loads((tmp_mailboxes / "pm.json").read_text(encoding="utf-8"))
+        assert on_disk[0]["status"] == STATUS_IN_PROGRESS
+        assert on_disk[0]["processing_since"] is not None
+
+    def test_mark_done_confirms_completed(self, tmp_mailboxes: Path) -> None:
+        """T_unit_12: mark_done 将 in_progress 消息标记为 done"""
+        from tools.mailbox_ops import STATUS_DONE, read_inbox, mark_done
+
+        msg_id = send_mail(
+            tmp_mailboxes,
+            to="manager",
+            from_="pm",
+            type_="task_done",
+            subject="完成",
+            content="product_spec.md 已写入",
+        )
+        read_inbox(tmp_mailboxes, "manager")  # unread → in_progress
+        count = mark_done(tmp_mailboxes, "manager", [msg_id])
+
+        assert count == 1
+        on_disk = json.loads((tmp_mailboxes / "manager.json").read_text(encoding="utf-8"))
+        assert on_disk[0]["status"] == STATUS_DONE
+
+    def test_reset_stale_restores_timed_out(self, tmp_mailboxes: Path) -> None:
+        """T_unit_13: reset_stale 将超时的 in_progress 消息恢复为 unread"""
+        from tools.mailbox_ops import STATUS_UNREAD, read_inbox, reset_stale
+
+        send_mail(
+            tmp_mailboxes,
+            to="pm",
+            from_="manager",
+            type_="task_assign",
+            subject="t",
+            content="c",
+        )
+        read_inbox(tmp_mailboxes, "pm")  # unread → in_progress
+
+        # 手动将 processing_since 设为过去时间，确保触发超时
+        messages = json.loads((tmp_mailboxes / "pm.json").read_text(encoding="utf-8"))
+        messages[0]["processing_since"] = "2000-01-01T00:00:00+00:00"
+        (tmp_mailboxes / "pm.json").write_text(
+            json.dumps(messages, ensure_ascii=False), encoding="utf-8"
+        )
+
+        count = reset_stale(tmp_mailboxes, "pm", timeout_seconds=0)
+        assert count == 1
+
+        on_disk = json.loads((tmp_mailboxes / "pm.json").read_text(encoding="utf-8"))
+        assert on_disk[0]["status"] == STATUS_UNREAD
+        assert on_disk[0]["processing_since"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 单元测试：check_sop_exists（T_unit_14~15）
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCheckSopExists:
+    """T_unit_14~15: check_sop_exists() 防止任务在无 SOP 时启动"""
+
+    def test_returns_false_when_active_sop_missing(self, tmp_path: Path) -> None:
+        """T_unit_14: active_sop.md 不存在时返回 False"""
+        from m4l27_run import check_sop_exists
+
+        sop_dir = tmp_path / "sop"
+        sop_dir.mkdir()
+        assert check_sop_exists(sop_dir) is False
+
+    def test_returns_true_when_active_sop_exists(self, tmp_path: Path) -> None:
+        """T_unit_15: active_sop.md 存在时返回 True"""
+        from m4l27_run import check_sop_exists
+
+        sop_dir = tmp_path / "sop"
+        sop_dir.mkdir()
+        (sop_dir / "active_sop.md").write_text("# Active SOP", encoding="utf-8")
+        assert check_sop_exists(sop_dir) is True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

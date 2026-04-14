@@ -50,6 +50,16 @@ skills:
     type: reference   # 四维需求发现框架，直接注入 Manager Agent 上下文，不启动沙盒
     enabled: true
 
+  - name: sop-creator
+    path: ./sop-creator
+    type: reference   # SOP 制定四要素框架，直接注入 Manager Agent 上下文，不启动沙盒
+    enabled: true
+
+  - name: sop-selector
+    path: ./sop-selector
+    type: reference   # SOP 选择三步框架，直接注入 Manager Agent 上下文，不启动沙盒
+    enabled: true
+
   # m4l26：任务链与信息传递 Skills
   - name: workspace-rules
     path: ./workspace-rules
