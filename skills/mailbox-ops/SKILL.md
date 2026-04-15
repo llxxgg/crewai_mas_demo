@@ -1,11 +1,9 @@
 ---
 name: mailbox-ops
 description: >
-  数字员工邮箱操作：向指定角色的邮箱发送消息（send_mail），
-  或读取自己邮箱中的未读消息（read_inbox）。
+  数字员工邮箱操作（三态状态机）：send_mail / read_inbox / mark_done / mark_done_all / reset_stale。
   邮箱文件位于共享工作区 /mnt/shared/mailboxes/。
-  适用场景：Manager 向 PM/Dev/QA 分配任务、发完成通知、广播消息；
-  各角色读取自己的未读任务邮件。
+  消息生命周期：unread → in_progress → done。
 type: task
 ---
 
@@ -13,91 +11,114 @@ type: task
 
 ## 功能概述
 
-本 Skill 提供数字员工之间的邮箱通信能力，包含两个操作：
-1. **send_mail**：向指定角色的邮箱发送消息
-2. **read_inbox**：读取自己邮箱中的未读消息（并标记为已读）
+本 Skill 提供数字员工之间的邮箱通信能力，基于**三态状态机**：
 
-邮箱文件路径：`/mnt/shared/mailboxes/{role}.json`（已挂载到沙盒）
+```
+unread → in_progress → done
+   ↑         │
+   └─────────┘  (reset_stale: 崩溃恢复)
+```
+
+- **unread**: 新写入的消息，等待被取走
+- **in_progress**: 已被取走，正在处理（防止重复取走）
+- **done**: 处理完成（由编排器或 Agent 确认）
+
+邮箱文件路径：`/mnt/shared/mailboxes/{role}.json`
+
+**脚本路径**：`/mnt/skills/mailbox-ops/scripts/mailbox_ops.py`
 
 ## 操作规范
 
 ### send_mail — 发送消息
 
-**脚本路径**：`/mnt/skills/mailbox-ops/scripts/mailbox_ops.py`
-
-**调用方式**：
-
 ```bash
-# 先确保 filelock 已安装
 pip install filelock -q
 
-# 调用 send_mail
 python3 /mnt/skills/mailbox-ops/scripts/mailbox_ops.py send_mail \
   --mailbox-dir /mnt/shared/mailboxes \
   --to pm \
   --from manager \
   --type task_assign \
   --subject "产品文档设计" \
-  --content "请根据 /mnt/shared/needs/requirements.md 设计产品规格文档，完成后写入 /mnt/shared/design/product_spec.md，并发邮件通知我验收"
+  --content "请根据 /mnt/shared/needs/requirements.md 设计产品规格文档"
 ```
 
 **参数说明**：
-- `--mailbox-dir`：邮箱目录路径（固定为 `/mnt/shared/mailboxes`）
-- `--to`：收件人角色，允许值：`manager` | `pm` | `dev` | `qa`
-- `--from`：发件人角色（即你自己的角色）
-- `--type`：消息类型
-  - `task_assign`：任务分配（Manager 发给执行者）
-  - `task_done`：任务完成通知（执行者发给 Manager）
-  - `broadcast`：广播通知（发给多个角色时逐个调用）
-- `--subject`：邮件标题（简短，15 字以内）
-- `--content`：邮件正文（包含任务描述、文档路径等）
+- `--to`：收件人角色（manager | pm | dev | qa）
+- `--from`：发件人角色（即你自己）
+- `--type`：消息类型（task_assign / task_done / broadcast）
+- `--subject`：邮件标题（15字以内）
+- `--content`：邮件正文（只传路径引用，不传文档全文）
 
-**输出格式**（JSON）：
-```json
-{
-  "errcode": 0,
-  "errmsg": "success",
-  "msg_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-}
-```
+**输出**：`{"errcode": 0, "errmsg": "success", "msg_id": "<uuid>"}`
 
-### read_inbox — 读取未读消息
+### read_inbox — 读取未处理消息
 
-**调用方式**：
+读取 unread 消息并**原子标记为 in_progress**（防止并发重复取走）。
+不会直接标 done — 处理成功后需调用 mark_done 确认。
 
 ```bash
-pip install filelock -q
-
 python3 /mnt/skills/mailbox-ops/scripts/mailbox_ops.py read_inbox \
   --mailbox-dir /mnt/shared/mailboxes \
   --role pm
 ```
 
-**参数说明**：
-- `--mailbox-dir`：邮箱目录路径（固定为 `/mnt/shared/mailboxes`）
-- `--role`：你自己的角色（读取自己的邮箱）
+**参数**：`--role` 你自己的角色
 
-**输出格式**（JSON）：
+**输出**：
 ```json
 {
   "errcode": 0,
   "errmsg": "success",
   "messages": [
     {
-      "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "id": "<uuid>",
       "from": "manager",
       "to": "pm",
       "type": "task_assign",
       "subject": "产品文档设计",
       "content": "请根据需求文档...",
       "timestamp": "2026-04-10T10:00:00+00:00",
-      "read": false
+      "status": "unread",
+      "processing_since": null
     }
   ]
 }
 ```
 
-**注意**：read_inbox 读取后会自动将所有返回消息标记为已读（幂等保护）。
+### mark_done — 确认消息处理完成
+
+将指定消息从 in_progress → done（处理完成确认）。
+
+```bash
+python3 /mnt/skills/mailbox-ops/scripts/mailbox_ops.py mark_done \
+  --mailbox-dir /mnt/shared/mailboxes \
+  --role pm \
+  --msg-ids "uuid1,uuid2"
+```
+
+**输出**：`{"errcode": 0, "errmsg": "success", "marked": 2}`
+
+### mark_done_all — 批量确认完成
+
+将该角色邮箱中所有 in_progress 消息标记为 done。
+
+```bash
+python3 /mnt/skills/mailbox-ops/scripts/mailbox_ops.py mark_done_all \
+  --mailbox-dir /mnt/shared/mailboxes \
+  --role pm
+```
+
+### reset_stale — 崩溃恢复
+
+将超时未完成的 in_progress 消息恢复为 unread。
+
+```bash
+python3 /mnt/skills/mailbox-ops/scripts/mailbox_ops.py reset_stale \
+  --mailbox-dir /mnt/shared/mailboxes \
+  --role pm \
+  --timeout 900
+```
 
 ## ⚠️ 强制执行要求（CRITICAL）
 
@@ -109,6 +130,6 @@ python3 /mnt/skills/mailbox-ops/scripts/mailbox_ops.py read_inbox \
 
 ## 错误处理
 
-- 若 `--to` 或 `--role` 不在允许列表（manager/pm/dev/qa），输出 errcode=1
-- 若邮箱文件不存在，自动创建空邮箱后继续（不报错）
-- 若 filelock 获取超时（默认 10 秒），输出 errcode=2，errmsg 说明原因
+- 若角色不在允许列表（manager/pm/dev/qa），输出 errcode=1
+- 若邮箱文件不存在，自动创建空邮箱后继续
+- 若 filelock 获取超时（默认 10 秒），输出 errcode=2

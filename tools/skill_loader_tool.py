@@ -184,6 +184,11 @@ class SkillLoaderTool(BaseTool):
     # 💡 沙盒 MCP URL：默认 8022，各课程可传入自定义端口（m4l25 Manager=8023, Dev=8024）
     sandbox_mcp_url: str = SANDBOX_MCP_URL
 
+    # 💡 v3：workspace-local skills 目录（空字符串 = 使用全局 SKILLS_DIR，保持向后兼容）
+    # m4l25 Manager：workspace/manager/skills/
+    # m4l25 Dev：workspace/dev/skills/
+    skills_dir: str = ""
+
     # Pydantic 会把普通 dict 属性当作模型字段，用 PrivateAttr 绕开
     _skill_registry: dict[str, Any] = PrivateAttr(default_factory=dict)
     _instruction_cache: dict[str, Any] = PrivateAttr(default_factory=dict)
@@ -192,22 +197,34 @@ class SkillLoaderTool(BaseTool):
         self,
         sandbox_mount_desc: str = DEFAULT_SANDBOX_MOUNT_DESC,
         sandbox_mcp_url: str = SANDBOX_MCP_URL,
+        skills_dir: str = "",
     ):
-        super().__init__(sandbox_mount_desc=sandbox_mount_desc, sandbox_mcp_url=sandbox_mcp_url)
+        super().__init__(
+            sandbox_mount_desc=sandbox_mount_desc,
+            sandbox_mcp_url=sandbox_mcp_url,
+            skills_dir=skills_dir,
+        )
         # 实例级属性，避免类级共享
         self._skill_registry = {}
         self._instruction_cache = {}
         self._build_description()
 
+    def _effective_skills_dir(self) -> Path:
+        """返回有效的 skills 目录：workspace-local 优先，否则退回全局 SKILLS_DIR。"""
+        if self.skills_dir:
+            return Path(self.skills_dir)
+        return SKILLS_DIR
+
     # ── 阶段 1：元数据解析，构建 XML description ────────────────────────────
 
-    def _build_description(self):
+    def _build_description(self) -> None:
         """
         💡 核心点：渐进式披露第一阶段
         只读 frontmatter，构建轻量 XML 注入 description。
         主 Agent 看到工具 → 知道"什么场景用什么 Skill"，但不加载完整指令。
         """
-        manifest_path = SKILLS_DIR / "load_skills.yaml"
+        effective_dir = self._effective_skills_dir()
+        manifest_path = effective_dir / "load_skills.yaml"
         if not manifest_path.exists():
             # 找不到配置文件时，保证工具仍可被安全加载
             self.description = (
@@ -235,7 +252,7 @@ class SkillLoaderTool(BaseTool):
                 continue
             name = skill_conf["name"]
             skill_type = skill_conf.get("type", "task")
-            skill_path = SKILLS_DIR / name
+            skill_path = effective_dir / name
             if not skill_path.exists():
                 continue
             if not (skill_path / "SKILL.md").exists():
@@ -260,8 +277,10 @@ class SkillLoaderTool(BaseTool):
         # 💡 核心点：约束已在 SkillLoaderInput.task_context 的 Field description 中定义，
         #    这里只展示 Skill 能力清单，保持 description 简洁
         self.description = (
-            "当需要完成的任务涉及以下XML 列表中的技能时，调用此工具。\n"
-            "根据下方 XML 列表选择正确的 skill_name，并在 task_context 中提供完整任务信息。\n\n"
+            "⚠️ 重要：这是你唯一的工具。所有能力（包括 memory-save、sop 等）都必须通过此工具调用，"
+            "不得直接调用 skill 名称作为工具。\n\n"
+            "调用方式：skill_loader(skill_name='<名称>', task_context='<任务描述>')\n"
+            "skill_name 必须严格来自下方 XML 列表中的 <name> 值。\n\n"
             + "\n".join(xml_parts)
         )
 

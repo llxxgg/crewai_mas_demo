@@ -13,7 +13,7 @@
   T6 ：工作区共享目录结构完整（WORKSPACE_RULES / needs / design / mailboxes）
   T7 ：Manager workspace 四件套存在且非空
   T8 ：PM workspace 四件套存在且非空
-  T9 ：workspace-rules skill 已注册为 reference 类型
+  T9 ：workspace-local mailbox skill 存在且正确配置（v3）
   T10：mailboxes 初始文件格式正确（合法 JSON 空数组）
   T11：三态状态机完整流转（unread → in_progress → done）
   T12：reset_stale 崩溃恢复（in_progress → unread）
@@ -78,14 +78,14 @@ class TestT2SendMail:
         (MAILBOXES_DIR / "pm.json").write_text("[]", encoding="utf-8")
 
     def test_send_mail_appends_message(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail
+        from tools.mailbox_ops import send_mail
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试任务", content="请设计产品文档")
         messages = json.loads((MAILBOXES_DIR / "pm.json").read_text())
         assert len(messages) == 1
 
     def test_send_mail_fields_complete(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail
+        from tools.mailbox_ops import send_mail
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试任务", content="请设计产品文档")
         msg = json.loads((MAILBOXES_DIR / "pm.json").read_text())[0]
@@ -96,7 +96,7 @@ class TestT2SendMail:
 
     def test_send_mail_status_is_unread(self) -> None:
         """新消息 status 必须为 unread（三态起点）"""
-        from m4l26_mailbox.mailbox_ops import send_mail, STATUS_UNREAD
+        from tools.mailbox_ops import send_mail, STATUS_UNREAD
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试任务", content="内容")
         msg = json.loads((MAILBOXES_DIR / "pm.json").read_text())[0]
@@ -105,7 +105,7 @@ class TestT2SendMail:
 
     def test_send_mail_processing_since_is_none(self) -> None:
         """新消息 processing_since 必须为 None（尚未被取走）"""
-        from m4l26_mailbox.mailbox_ops import send_mail
+        from tools.mailbox_ops import send_mail
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试任务", content="内容")
         msg = json.loads((MAILBOXES_DIR / "pm.json").read_text())[0]
@@ -113,13 +113,13 @@ class TestT2SendMail:
             "send_mail 写入的 processing_since 应为 None"
 
     def test_send_mail_returns_id(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail
+        from tools.mailbox_ops import send_mail
         msg_id = send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                            type_="task_assign", subject="测试任务", content="内容")
         assert isinstance(msg_id, str) and len(msg_id) > 0
 
     def test_send_mail_timestamp_auto_generated(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail
+        from tools.mailbox_ops import send_mail
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试任务", content="内容")
         msg = json.loads((MAILBOXES_DIR / "pm.json").read_text())[0]
@@ -140,7 +140,7 @@ class TestT3ReadInbox:
         (MAILBOXES_DIR / "pm.json").write_text("[]", encoding="utf-8")
 
     def test_read_inbox_returns_unread(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox
+        from tools.mailbox_ops import send_mail, read_inbox
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试", content="内容")
         messages = read_inbox(MAILBOXES_DIR, role="pm")
@@ -148,7 +148,7 @@ class TestT3ReadInbox:
 
     def test_read_inbox_marks_as_in_progress(self) -> None:
         """read_inbox 后文件中状态应为 in_progress（不是 done）"""
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox, STATUS_IN_PROGRESS
+        from tools.mailbox_ops import send_mail, read_inbox, STATUS_IN_PROGRESS
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试", content="内容")
         read_inbox(MAILBOXES_DIR, role="pm")
@@ -158,7 +158,7 @@ class TestT3ReadInbox:
 
     def test_read_inbox_sets_processing_since(self) -> None:
         """read_inbox 后 processing_since 应为非 None 的 ISO 时间戳"""
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox
+        from tools.mailbox_ops import send_mail, read_inbox
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试", content="内容")
         read_inbox(MAILBOXES_DIR, role="pm")
@@ -169,7 +169,7 @@ class TestT3ReadInbox:
 
     def test_read_inbox_snapshot_not_modified(self) -> None:
         """返回的快照是副本——修改快照不应影响文件中的数据"""
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox
+        from tools.mailbox_ops import send_mail, read_inbox
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="测试", content="内容")
         snapshot = read_inbox(MAILBOXES_DIR, role="pm")
@@ -181,7 +181,7 @@ class TestT3ReadInbox:
 
     def test_read_inbox_read_and_mark_in_same_lock(self) -> None:
         """read + 标记在同一锁内：无 TOCTOU 窗口"""
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox, STATUS_IN_PROGRESS
+        from tools.mailbox_ops import send_mail, read_inbox, STATUS_IN_PROGRESS
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="原子性测试", content="内容")
         msgs = read_inbox(MAILBOXES_DIR, role="pm")
@@ -205,7 +205,7 @@ class TestT3bMarkDone:
         (MAILBOXES_DIR / "pm.json").write_text("[]", encoding="utf-8")
 
     def test_mark_done_changes_status(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox, mark_done, STATUS_DONE
+        from tools.mailbox_ops import send_mail, read_inbox, mark_done, STATUS_DONE
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="任务", content="内容")
         msgs = read_inbox(MAILBOXES_DIR, role="pm")
@@ -220,7 +220,7 @@ class TestT3bMarkDone:
 
     def test_mark_done_all_in_progress(self) -> None:
         """mark_done_all_in_progress 批量确认所有 in_progress 消息"""
-        from m4l26_mailbox.mailbox_ops import (
+        from tools.mailbox_ops import (
             send_mail, read_inbox, mark_done_all_in_progress, STATUS_DONE
         )
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
@@ -237,7 +237,7 @@ class TestT3bMarkDone:
 
     def test_mark_done_only_targets_in_progress(self) -> None:
         """mark_done 不影响 unread 或 done 状态的消息"""
-        from m4l26_mailbox.mailbox_ops import (
+        from tools.mailbox_ops import (
             send_mail, read_inbox, mark_done, STATUS_UNREAD, STATUS_IN_PROGRESS, STATUS_DONE
         )
         # 写三条消息
@@ -275,7 +275,7 @@ class TestT4aConcurrentWrite:
         (MAILBOXES_DIR / "pm.json").write_text("[]", encoding="utf-8")
 
     def test_concurrent_send_no_corruption(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail
+        from tools.mailbox_ops import send_mail
         errors: list[Exception] = []
 
         def writer(n: int) -> None:
@@ -311,7 +311,7 @@ class TestT4bConcurrentSemantic:
         (MAILBOXES_DIR / "pm.json").write_text("[]", encoding="utf-8")
 
     def test_read_and_write_concurrent_no_lost_messages(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox
+        from tools.mailbox_ops import send_mail, read_inbox
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="原始任务", content="内容")
 
@@ -357,7 +357,7 @@ class TestT5ReadIdempotency:
         (MAILBOXES_DIR / "pm.json").write_text("[]", encoding="utf-8")
 
     def test_second_read_returns_empty(self) -> None:
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox
+        from tools.mailbox_ops import send_mail, read_inbox
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="任务", content="内容")
         read_inbox(MAILBOXES_DIR, role="pm")   # 第一次：unread → in_progress
@@ -438,36 +438,44 @@ class TestT8PMWorkspace:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# T9 | workspace-rules skill 注册
+# T9 | workspace-local mailbox skill 注册（v3）
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestT9WorkspaceRulesSkill:
-    """T9：workspace-rules skill 存在且注册为 reference 类型"""
+class TestT9MailboxSkill:
+    """T9：Manager 和 PM 的 workspace-local mailbox skill 存在且正确配置"""
 
-    def test_skill_md_exists(self) -> None:
-        assert (SKILLS_DIR / "workspace-rules" / "SKILL.md").exists(), \
-            "workspace-rules/SKILL.md 不存在"
+    MANAGER_SKILLS_DIR = WORKSPACE_MANAGER / "skills"
+    PM_SKILLS_DIR      = WORKSPACE_PM      / "skills"
 
-    def test_skill_registered_in_yaml(self) -> None:
-        yaml_content = (SKILLS_DIR / "load_skills.yaml").read_text(encoding="utf-8")
-        assert "workspace-rules" in yaml_content, "workspace-rules 未注册到 load_skills.yaml"
+    def test_manager_mailbox_skill_md_exists(self) -> None:
+        assert (self.MANAGER_SKILLS_DIR / "mailbox" / "SKILL.md").exists(), \
+            "Manager workspace/skills/mailbox/SKILL.md 不存在"
 
-    def test_skill_is_reference_type(self) -> None:
-        yaml_content = (SKILLS_DIR / "load_skills.yaml").read_text(encoding="utf-8")
-        lines = yaml_content.split("\n")
-        in_skill = False
-        for line in lines:
-            if "name: workspace-rules" in line:
-                in_skill = True
-            if in_skill and "type:" in line:
-                assert "reference" in line, \
-                    f"workspace-rules 的 type 不是 reference: {line}"
-                break
+    def test_pm_mailbox_skill_md_exists(self) -> None:
+        assert (self.PM_SKILLS_DIR / "mailbox" / "SKILL.md").exists(), \
+            "PM workspace/skills/mailbox/SKILL.md 不存在"
 
-    def test_skill_content_has_workspace_rules(self) -> None:
-        content = (SKILLS_DIR / "workspace-rules" / "SKILL.md").read_text(encoding="utf-8")
-        assert "needs" in content and "design" in content, \
-            "workspace-rules SKILL.md 缺少读写权限规则"
+    def test_manager_load_skills_has_mailbox(self) -> None:
+        yaml_content = (self.MANAGER_SKILLS_DIR / "load_skills.yaml").read_text(encoding="utf-8")
+        assert "mailbox" in yaml_content, \
+            "Manager load_skills.yaml 未注册 mailbox skill"
+
+    def test_pm_load_skills_has_mailbox(self) -> None:
+        yaml_content = (self.PM_SKILLS_DIR / "load_skills.yaml").read_text(encoding="utf-8")
+        assert "mailbox" in yaml_content, \
+            "PM load_skills.yaml 未注册 mailbox skill"
+
+    def test_mailbox_cli_exists_manager(self) -> None:
+        cli_path = self.MANAGER_SKILLS_DIR / "mailbox" / "scripts" / "mailbox_cli.py"
+        assert cli_path.exists(), "Manager mailbox_cli.py 不存在"
+
+    def test_mailbox_cli_exists_pm(self) -> None:
+        cli_path = self.PM_SKILLS_DIR / "mailbox" / "scripts" / "mailbox_cli.py"
+        assert cli_path.exists(), "PM mailbox_cli.py 不存在"
+
+    def test_pm_has_product_design_skill(self) -> None:
+        assert (self.PM_SKILLS_DIR / "product_design" / "SKILL.md").exists(), \
+            "PM workspace/skills/product_design/SKILL.md 不存在"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -508,7 +516,7 @@ class TestT11ThreeStateStateMachine:
 
     def test_full_state_transition(self) -> None:
         """完整验证：unread → in_progress → done"""
-        from m4l26_mailbox.mailbox_ops import (
+        from tools.mailbox_ops import (
             send_mail, read_inbox, mark_done,
             STATUS_UNREAD, STATUS_IN_PROGRESS, STATUS_DONE,
         )
@@ -534,7 +542,7 @@ class TestT11ThreeStateStateMachine:
 
     def test_in_progress_not_returned_by_read_inbox(self) -> None:
         """in_progress 的消息不被 read_inbox 重复取走（并发安全）"""
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox
+        from tools.mailbox_ops import send_mail, read_inbox
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="消息", content="内容")
         first  = read_inbox(MAILBOXES_DIR, role="pm")
@@ -544,7 +552,7 @@ class TestT11ThreeStateStateMachine:
 
     def test_done_messages_not_returned(self) -> None:
         """done 状态的消息永远不被 read_inbox 取走"""
-        from m4l26_mailbox.mailbox_ops import (
+        from tools.mailbox_ops import (
             send_mail, read_inbox, mark_done, STATUS_DONE
         )
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
@@ -575,7 +583,7 @@ class TestT12ResetStale:
 
     def test_reset_stale_reverts_to_unread(self) -> None:
         """超时的 in_progress 消息被 reset_stale 恢复为 unread"""
-        from m4l26_mailbox.mailbox_ops import (
+        from tools.mailbox_ops import (
             send_mail, read_inbox, reset_stale, STATUS_UNREAD
         )
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
@@ -594,7 +602,7 @@ class TestT12ResetStale:
 
     def test_reset_stale_only_affects_timed_out(self) -> None:
         """未超时的 in_progress 消息不被 reset_stale 影响"""
-        from m4l26_mailbox.mailbox_ops import (
+        from tools.mailbox_ops import (
             send_mail, read_inbox, reset_stale, STATUS_IN_PROGRESS
         )
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
@@ -610,7 +618,7 @@ class TestT12ResetStale:
 
     def test_reset_stale_allows_reprocessing(self) -> None:
         """reset_stale 后消息重新可被 read_inbox 取走（崩溃恢复完整链路）"""
-        from m4l26_mailbox.mailbox_ops import send_mail, read_inbox, reset_stale
+        from tools.mailbox_ops import send_mail, read_inbox, reset_stale
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
                   type_="task_assign", subject="崩溃恢复测试", content="内容")
         read_inbox(MAILBOXES_DIR, role="pm")      # → in_progress（模拟崩溃）
@@ -622,7 +630,7 @@ class TestT12ResetStale:
 
     def test_done_messages_not_reset(self) -> None:
         """done 状态的消息不被 reset_stale 影响"""
-        from m4l26_mailbox.mailbox_ops import (
+        from tools.mailbox_ops import (
             send_mail, read_inbox, mark_done, reset_stale, STATUS_DONE
         )
         send_mail(MAILBOXES_DIR, to="pm", from_="manager",
@@ -645,7 +653,7 @@ class TestT13CreateWorkspace:
 
     def test_creates_directory_structure(self) -> None:
         """create_workspace 创建 needs/、design/、mailboxes/ 子目录"""
-        from m4l26_mailbox.workspace_ops import create_workspace
+        from tools.workspace_ops import create_workspace
         with tempfile.TemporaryDirectory() as tmpdir:
             shared = Path(tmpdir) / "shared"
             result = create_workspace(shared, roles=["manager", "pm"],
@@ -656,7 +664,7 @@ class TestT13CreateWorkspace:
 
     def test_creates_mailbox_files(self) -> None:
         """create_workspace 为每个角色创建初始邮箱（空 JSON 数组）"""
-        from m4l26_mailbox.workspace_ops import create_workspace
+        from tools.workspace_ops import create_workspace
         with tempfile.TemporaryDirectory() as tmpdir:
             shared = Path(tmpdir) / "shared"
             create_workspace(shared, roles=["manager", "pm"])
@@ -668,7 +676,7 @@ class TestT13CreateWorkspace:
 
     def test_creates_workspace_rules(self) -> None:
         """create_workspace 生成 WORKSPACE_RULES.md"""
-        from m4l26_mailbox.workspace_ops import create_workspace
+        from tools.workspace_ops import create_workspace
         with tempfile.TemporaryDirectory() as tmpdir:
             shared = Path(tmpdir) / "shared"
             create_workspace(shared, roles=["manager", "pm"],
@@ -681,7 +689,7 @@ class TestT13CreateWorkspace:
 
     def test_idempotent_does_not_overwrite(self) -> None:
         """第二次调用 create_workspace 不覆盖已存在的文件"""
-        from m4l26_mailbox.workspace_ops import create_workspace
+        from tools.workspace_ops import create_workspace
         with tempfile.TemporaryDirectory() as tmpdir:
             shared = Path(tmpdir) / "shared"
             create_workspace(shared, roles=["manager", "pm"])
@@ -702,7 +710,7 @@ class TestT13CreateWorkspace:
 
     def test_returns_creation_report(self) -> None:
         """create_workspace 返回 created_dirs / created_files / skipped_files"""
-        from m4l26_mailbox.workspace_ops import create_workspace
+        from tools.workspace_ops import create_workspace
         with tempfile.TemporaryDirectory() as tmpdir:
             shared = Path(tmpdir) / "shared"
             result = create_workspace(shared, roles=["manager", "pm"])

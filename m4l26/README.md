@@ -1,18 +1,8 @@
-# 第26课示例代码：任务链与信息传递——数字员工的协作协议
+# 第26课：任务链与信息传递
 
-本课演示 Manager 和 PM 通过**邮箱（mailbox）**协作完成一条完整任务链。
-与第25课（两个角色各自独立）不同，本课由编排器（`m4l26_run.py`）驱动四步流程，角色间通过共享工作区传递消息。
+本课演示**通用数字员工框架**在多角色协作中的应用：Manager 和 PM 通过邮箱（mailbox Skill）实现任务链。
 
----
-
-## 核心教学点
-
-| 概念 | 说明 |
-|------|------|
-| **共享工作区** | Manager 在步骤0调用 `create_workspace` 建立协作基础设施 |
-| **邮箱协议** | 角色通过 `mailboxes/manager.json` / `pm.json` 传递结构化消息 |
-| **三态状态机** | 消息状态：`unread → in_progress → done`，防止崩溃重复消费 |
-| **编排器负责确认** | 每步 Crew 成功后，由 `run.py` 调用 `mark_done_all_in_progress`，而非 Agent 自己改状态 |
+> **核心教学点**：三态状态机（unread→in_progress→done）、路径引用传递、崩溃恢复（reset_stale）
 
 ---
 
@@ -20,108 +10,198 @@
 
 ```
 m4l26/
-├── m4l26_run.py              # 编排器（主入口，四步流程）
-├── m4l26_manager.py          # Manager 角色（ManagerAssignCrew / ManagerReviewCrew）
-├── m4l26_pm.py               # PM 角色（PMExecuteCrew）
-├── m4l26_mailbox/
-│   ├── mailbox_ops.py        # 邮箱操作（send/read/mark_done）
-│   ├── workspace_ops.py      # create_workspace 实现
-│   └── mailbox_tools.py      # CrewAI Tool 封装
-├── sandbox-docker-compose.yaml
+├── main.py                       # Manager 入口（新项目分配 / 验收）
+├── start_pm.py                   # PM 入口（检查邮箱 + 完成任务）
+├── tools/
+│   ├── mailbox_ops.py            # Python API（用于测试，与 CLI 同逻辑）
+│   └── workspace_ops.py          # create_workspace（幂等初始化）
+├── sandbox-docker-compose.yaml   # 双沙盒（Manager:8025, PM:8026）
+├── test_m4l26.py                 # 单元测试（含邮箱状态机 + 工作区 + Skill结构）
+├── test_m4l26_integration.py     # E2E 集成测试
+├── conftest.py                   # pytest fixtures（shared_dir 临时目录）
 ├── demo_input/
-│   └── project_requirement.md  # XiaoPaw 宠物健康记录需求
+│   └── project_requirement.md   # 项目需求输入
 └── workspace/
-    ├── manager/              # Manager 个人区（sessions、review_result.md）
-    ├── pm/                   # PM 个人区（sessions、草稿）
-    └── shared/               # 共享工作区
-        ├── mailboxes/        # manager.json / pm.json（邮箱）
-        ├── needs/            # requirements.md（需求文档）
-        ├── design/           # product_spec.md（产品文档，PM输出）
-        └── WORKSPACE_RULES.md
+    ├── manager/                  # Manager workspace
+    │   ├── soul.md               # 身份与决策偏好
+    │   ├── agent.md              # 工作规范（两个场景）
+    │   ├── user.md               # 甲方画像
+    │   └── skills/               # workspace-local Skill Manifest
+    │       ├── load_skills.yaml  # Skill 清单
+    │       ├── mailbox/          # mailbox Skill
+    │       ├── init_project/     # init_project Skill
+    │       └── memory-save/      # memory-save Skill
+    ├── pm/                       # PM workspace（同结构）
+    │   ├── soul.md / agent.md / user.md
+    │   └── skills/
+    │       ├── mailbox/ init_project/ product_design/ memory-save/
+    └── shared/                   # 运行时生成（由 init_project Skill 创建）
+        ├── needs/requirements.md
+        ├── design/product_spec.md
+        └── mailboxes/{manager,pm}.json
 ```
 
 ---
 
-## 运行步骤
+## 架构：v3 vs v2
 
-### 第一步：启动沙盒
+| 维度 | v2（旧） | v3（当前） |
+|------|---------|-----------|
+| 编排 | `run_demo.py` 编排器，顺序调用三个 Crew | 无编排器，Manager / PM 各自独立启动 |
+| 类 | ManagerAssignCrew + ManagerReviewCrew + PMExecuteCrew | DigitalWorkerCrew × 2 实例（同一个类） |
+| 身份 | 硬编码 role/goal | 身份来自 `workspace/{role}/*.md` |
+| 通信 | 直接操作 mailbox_tools.py | mailbox Skill（CLI in Docker sandbox） |
+| Skills | 全局 skills 目录 | workspace-local `skills/` + 全局脚本分层 |
+
+---
+
+## 快速开始
+
+### 步骤 0：清理环境（支持重跑）
 
 ```bash
 cd /path/to/crewai_mas_demo/m4l26
 
-# Manager 和 PM 按需独立启动（端口不同）
-docker compose -f sandbox-docker-compose.yaml --profile manager up -d  # 端口 8025
-docker compose -f sandbox-docker-compose.yaml --profile pm up -d       # 端口 8026
+# 清空 shared 运行时目录（由 init_project 重新生成）
+rm -rf workspace/shared
 
-# 或一次性全启动
-docker compose -f sandbox-docker-compose.yaml --profile manager --profile pm up -d
+# 清理产出
+rm -f workspace/manager/review_result.md
+
+# 清理 session 历史
+rm -rf workspace/manager/sessions workspace/pm/sessions
 ```
 
-| 角色 | 沙盒端口 | 个人区挂载 | 共享区挂载 |
-|------|---------|-----------|-----------|
-| Manager | 8025 | `workspace/manager` | `workspace/shared` |
-| PM | 8026 | `workspace/pm` | `workspace/shared` |
-
-### 第二步：运行演示
-
-```bash
-cd /path/to/crewai_mas_demo
-python m4l26/m4l26_run.py
-```
-
----
-
-## 四步流程说明
-
-```
-步骤0  Manager   create_workspace（建立共享工作区）
-  ↓
-步骤1  Manager   读需求 → 发 task_assign → pm.json
-  ↓
-步骤2  PM        读邮件 → 写 product_spec.md → 发 task_done → manager.json
-  ↓  （编排器确认：PM 邮箱 in_progress → done）
-步骤3  Manager   读邮件 → 验收文档 → 写 review_result.md
-     （编排器确认：Manager 邮箱 in_progress → done）
-```
-
-**编排器会在每步之间做结构检查**，任何一步失败会打印警告并终止，不会继续执行后续步骤。
-
----
-
-## 运行测试（不需要沙盒）
+### 步骤 1：启动沙盒
 
 ```bash
 cd /path/to/crewai_mas_demo
 
-# 单元测试（邮箱、workspace 操作）
+docker compose -f m4l26/sandbox-docker-compose.yaml up -d
+
+# 验证（均应返回 200）
+curl -s http://localhost:8025/mcp | head -1   # Manager
+curl -s http://localhost:8026/mcp | head -1   # PM
+```
+
+### 步骤 2：Manager 启动（分配任务）
+
+```bash
+cd /path/to/crewai_mas_demo/m4l26
+python main.py
+```
+
+Manager 执行：
+1. 初始化共享工作区（`/mnt/shared/needs/` + `/mnt/shared/design/` + mailboxes）
+2. 将需求写入 `/mnt/shared/needs/requirements.md`
+3. 给 PM 发 `task_assign` 邮件（只传路径引用）
+
+### 步骤 3：PM 启动（执行任务）
+
+```bash
+# 在另一个终端
+cd /path/to/crewai_mas_demo/m4l26
+python start_pm.py
+```
+
+PM 执行：
+1. 读取自己的邮箱，发现 `task_assign`
+2. 读取 `/mnt/shared/needs/requirements.md`
+3. 按 `product_design` Skill 规范撰写产品规格文档
+4. 写入 `/mnt/shared/design/product_spec.md`
+5. 给 Manager 发 `task_done` 邮件
+6. 标记原消息为 done
+
+### 步骤 4：Manager 验收
+
+```bash
+# 再次运行 Manager（检查邮箱 → 验收）
+python main.py
+```
+
+Manager 执行：
+1. 读取邮箱，发现 PM 的 `task_done`
+2. 对照需求验收产品文档
+3. 写入验收报告 `workspace/manager/review_result.md`
+4. 标记消息为 done
+
+### 步骤 5：检查产出
+
+```bash
+# 产品规格文档（PM 产出）
+cat workspace/shared/design/product_spec.md
+
+# 验收报告（Manager 产出）
+cat workspace/manager/review_result.md
+```
+
+### 步骤 6：运行测试
+
+```bash
+cd /path/to/crewai_mas_demo
+
+# 单元测试（不需要沙盒/API）
 python -m pytest m4l26/test_m4l26.py -v
 
-# 集成测试（四步全流程，需要沙盒和 LLM）
-python -m pytest m4l26/test_m4l26_integration.py -v
+# E2E 集成测试（需要沙盒 + LLM API）
+python -m pytest m4l26/test_m4l26_integration.py -v -s
 ```
+
+### 步骤 7：停止沙盒
+
+```bash
+docker compose -f m4l26/sandbox-docker-compose.yaml down
+```
+
+---
+
+## 三态状态机
+
+```
+send_mail → [unread]
+read_inbox → [in_progress]   ← 防止重复取走
+mark_done → [done]
+
+reset_stale: [in_progress] →[unread]  (超时恢复，崩溃容错)
+```
+
+| 操作 | CLI 命令 | Python API |
+|------|---------|-----------|
+| 发邮件 | `mailbox_cli.py send --to pm ...` | `send_mail(mailboxes_dir, to, ...)` |
+| 读邮件 | `mailbox_cli.py read --role pm` | `read_inbox(mailboxes_dir, role)` |
+| 标记完成 | `mailbox_cli.py done --role pm --msg-id x` | `mark_done(mailboxes_dir, role, msg_id)` |
+| 崩溃恢复 | `mailbox_cli.py reset-stale --role pm` | `reset_stale(mailboxes_dir, role, timeout)` |
+
+---
+
+## 邮件内容规范（核心教学点）
+
+**只传路径引用，不传文档内容**
+
+| ✅ 正确 | ❌ 错误 |
+|--------|--------|
+| 「请读 /mnt/shared/needs/requirements.md」 | 把 requirements.md 全文复制进邮件 |
+| 「产品文档已写入 /mnt/shared/design/product_spec.md」 | 把 product_spec.md 全文放进 task_done |
 
 ---
 
 ## 常见问题
 
-**Q：沙盒端口 8025/8026 被占用？**
+**Q：Manager 发完邮件后 PM 没读到？**
+→ 检查 `workspace/shared/mailboxes/pm.json` 中是否有 `status="unread"` 的消息。
+
+**Q：想清空重来？**
 ```bash
-docker compose -f sandbox-docker-compose.yaml --profile manager --profile pm down
-docker compose -f sandbox-docker-compose.yaml --profile manager --profile pm up -d
+rm -rf workspace/shared workspace/manager/review_result.md
+rm -rf workspace/manager/sessions workspace/pm/sessions
 ```
 
-**Q：想清除状态重新跑？**
+**Q：停止沙盒？**
 ```bash
-# 清邮箱（重置三态）
-echo "[]" > workspace/shared/mailboxes/manager.json
-echo "[]" > workspace/shared/mailboxes/pm.json
-# 清输出文件
-rm -f workspace/shared/design/product_spec.md
-rm -f workspace/manager/review_result.md
-# 清 session
-rm -f workspace/manager/sessions/*.json workspace/manager/sessions/*.jsonl
-rm -f workspace/pm/sessions/*.json workspace/pm/sessions/*.jsonl
+docker compose -f m4l26/sandbox-docker-compose.yaml down
 ```
 
-**Q：报 `ModuleNotFoundError`？**
-确认从 `crewai_mas_demo/` 目录运行，不要在 `m4l26/` 内直接运行。
+**Q：模型切换？**
+```bash
+DIGITAL_WORKER_MODEL=qwen-max python main.py
+```

@@ -18,13 +18,15 @@ test_m4l27.py — 单元测试 + 集成测试
   T_unit_13_reset_stale_restores      reset_stale 将超时 in_progress 恢复为 unread
   T_unit_14_check_sop_false           active_sop.md 不存在时 check_sop_exists 返回 False
   T_unit_15_check_sop_true            active_sop.md 存在时 check_sop_exists 返回 True
+  T_unit_16~22                        DigitalWorkerCrew 通用框架验证（7个）
 
 集成测试（需要 LLM，标记 @needs_llm）：
-  T_int_1_requirements_generated  RequirementsDiscoveryCrew 运行后 requirements.md 存在
-  T_int_2_task_assign_sent        ManagerAssignCrew 运行后 pm.json 有 task_assign
-  T_int_3_product_spec_exists     PMExecuteCrew 运行后 product_spec.md 存在
-  T_int_4_review_result_exists    ManagerReviewCrew 运行后 review_result.md 存在
-  T_int_5_sop_creator             SOPCreatorCrew 运行后 draft_*.md 存在
+  旧版（对比用）：
+    T_int_1~4  RequirementsDiscoveryCrew / ManagerAssignCrew / PMExecuteCrew / ManagerReviewCrew
+  新版（通用框架）：
+    T_int_g1   DigitalWorkerCrew(manager) 需求澄清 → requirements.md
+    T_int_g2   DigitalWorkerCrew(manager) 任务分配 → pm.json 有 task_assign
+    T_int_g3   DigitalWorkerCrew(pm) 执行任务 → product_spec.md + task_done
 """
 
 from __future__ import annotations
@@ -385,7 +387,107 @@ class TestCheckSopExists:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 集成测试（需要 LLM）
+# 单元测试：DigitalWorkerCrew 通用框架验证（T_unit_16~22）
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGenericFramework:
+    """T_unit_16~22: 验证 DigitalWorkerCrew 通用框架核心属性"""
+
+    def test_import_digital_worker_crew(self) -> None:
+        """T_unit_16: DigitalWorkerCrew 可从 shared 正常导入"""
+        from shared.digital_worker import DigitalWorkerCrew
+        assert DigitalWorkerCrew is not None
+
+    def test_universal_constants(self) -> None:
+        """T_unit_17: 通用常量 role/goal/task 正确"""
+        from shared.digital_worker import UNIVERSAL_ROLE, UNIVERSAL_GOAL, UNIVERSAL_TASK_TEMPLATE
+        assert UNIVERSAL_ROLE == "数字员工"
+        assert "任务" in UNIVERSAL_GOAL
+        assert "{user_request}" in UNIVERSAL_TASK_TEMPLATE
+
+    def test_manager_backstory_from_workspace(self) -> None:
+        """T_unit_18: Manager workspace 有 memory.md，backstory 非空"""
+        from shared.digital_worker import DigitalWorkerCrew
+        manager = DigitalWorkerCrew(
+            workspace_dir=_M4L27_DIR / "workspace" / "manager",
+            sandbox_port=8027,
+            has_shared=True,
+        )
+        backstory = manager.worker_agent().backstory
+        assert len(backstory) > 0, "Manager backstory 不应为空（至少有 memory.md）"
+
+    def test_pm_backstory_differs_from_manager(self) -> None:
+        """T_unit_19: 同一个类，不同 workspace = 不同身份（核心教学点）"""
+        from shared.digital_worker import DigitalWorkerCrew
+        manager = DigitalWorkerCrew(
+            workspace_dir=_M4L27_DIR / "workspace" / "manager",
+            sandbox_port=8027,
+            has_shared=True,
+        )
+        pm = DigitalWorkerCrew(
+            workspace_dir=_M4L27_DIR / "workspace" / "pm",
+            sandbox_port=8028,
+            has_shared=True,
+        )
+        assert manager.worker_agent().backstory != pm.worker_agent().backstory, \
+            "Manager 和 PM 的 backstory 应不同（来自不同 workspace）"
+
+    def test_sandbox_ports_isolated(self) -> None:
+        """T_unit_21: 不同实例的沙盒端口隔离"""
+        from shared.digital_worker import DigitalWorkerCrew
+        m = DigitalWorkerCrew(
+            workspace_dir=_M4L27_DIR / "workspace" / "manager",
+            sandbox_port=8027,
+        )
+        p = DigitalWorkerCrew(
+            workspace_dir=_M4L27_DIR / "workspace" / "pm",
+            sandbox_port=8028,
+        )
+        assert m.sandbox_port != p.sandbox_port
+
+    def test_task_uses_universal_template(self) -> None:
+        """T_unit_22: Task description 使用通用模板"""
+        from shared.digital_worker import DigitalWorkerCrew, UNIVERSAL_TASK_TEMPLATE
+        w = DigitalWorkerCrew(
+            workspace_dir=_M4L27_DIR / "workspace" / "manager",
+            sandbox_port=8027,
+        )
+        task_desc = w.worker_task().description
+        assert task_desc == UNIVERSAL_TASK_TEMPLATE
+
+    def test_run_demo_imports(self) -> None:
+        """T_unit_23: run_demo.py 的核心函数可正常导入"""
+        from run_demo import (
+            wait_for_human, HumanDecision,
+            check_requirements_exists, check_sop_exists,
+            check_pm_inbox_has_task_assign, check_product_spec_exists,
+        )
+        assert callable(wait_for_human)
+        assert callable(check_requirements_exists)
+
+    def test_run_demo_wait_for_human_compatible(self, tmp_mailboxes: Path) -> None:
+        """T_unit_24: run_demo.py 的 wait_for_human 行为与旧版一致"""
+        from run_demo import wait_for_human as new_wait
+
+        send_mail(
+            tmp_mailboxes,
+            to="human",
+            from_="manager",
+            type_="needs_confirm",
+            subject="测试",
+            content="test",
+        )
+        with patch("builtins.input", return_value="y"):
+            result = new_wait(
+                tmp_mailboxes / "human.json",
+                expected_type="needs_confirm",
+                step_label="测试确认",
+            )
+        assert result.confirmed is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 集成测试（需要 LLM）— 旧版 Crew 类（对比用）
 # ─────────────────────────────────────────────────────────────────────────────
 
 @needs_llm
@@ -505,3 +607,111 @@ class TestIntegrationReviewResult:
 
         review_file = _M4L27_DIR / "workspace" / "manager" / "review_result.md"
         assert review_file.exists(), "review_result.md 应该被写入"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 集成测试（需要 LLM）— 新版通用框架 DigitalWorkerCrew
+# ─────────────────────────────────────────────────────────────────────────────
+
+MANAGER_DIR = _M4L27_DIR / "workspace" / "manager"
+PM_DIR = _M4L27_DIR / "workspace" / "pm"
+SHARED_DIR = _M4L27_DIR / "workspace" / "shared"
+MAILBOXES_DIR = SHARED_DIR / "mailboxes"
+MANAGER_PORT = 8027
+PM_PORT = 8028
+
+
+@needs_llm
+class TestGenericIntegrationRequirements:
+    """T_int_g1: DigitalWorkerCrew(manager) 需求澄清 → requirements.md"""
+
+    def test_requirements_via_generic_crew(self, clean_crewai_hooks) -> None:  # noqa: ARG002
+        from crewai.hooks import clear_before_llm_call_hooks
+        from shared.digital_worker import DigitalWorkerCrew
+
+        clear_before_llm_call_hooks()
+        manager = DigitalWorkerCrew(
+            workspace_dir=MANAGER_DIR,
+            sandbox_port=MANAGER_PORT,
+            session_id=f"l27_test_req_{uuid.uuid4().hex[:8]}",
+            has_shared=True,
+        )
+        result = manager.kickoff(
+            "请理解以下需求并整理成结构化需求文档，写入 /mnt/shared/needs/requirements.md。\n\n"
+            "用户需求：帮我设计一个用户注册流程，支持邮箱注册+邮件验证，不需要社交登录。"
+        )
+        assert result is not None
+        req_file = SHARED_DIR / "needs" / "requirements.md"
+        assert req_file.exists(), "requirements.md 应该被写入"
+        assert req_file.stat().st_size > 0
+
+
+@needs_llm
+class TestGenericIntegrationTaskAssign:
+    """T_int_g2: DigitalWorkerCrew(manager) 任务分配 → pm.json 有 task_assign"""
+
+    def test_task_assign_via_generic_crew(self, clean_crewai_hooks) -> None:  # noqa: ARG002
+        from crewai.hooks import clear_before_llm_call_hooks
+        from shared.digital_worker import DigitalWorkerCrew
+
+        req_file = SHARED_DIR / "needs" / "requirements.md"
+        if not req_file.exists():
+            req_file.parent.mkdir(parents=True, exist_ok=True)
+            req_file.write_text(
+                "# 需求文档\n## 目标\n用户注册流程\n## 边界\n支持邮箱注册+邮件验证\n"
+                "## 约束\n无\n## 验收标准\n注册后可登录\n",
+                encoding="utf-8",
+            )
+        (MAILBOXES_DIR / "pm.json").write_text("[]", encoding="utf-8")
+
+        clear_before_llm_call_hooks()
+        manager = DigitalWorkerCrew(
+            workspace_dir=MANAGER_DIR,
+            sandbox_port=MANAGER_PORT,
+            session_id=f"l27_test_assign_{uuid.uuid4().hex[:8]}",
+            has_shared=True,
+        )
+        manager.kickoff(
+            "请读取需求文档和 active_sop.md，"
+            "然后通过 mailbox-ops skill 向 PM 发送产品文档设计任务。"
+        )
+
+        pm_inbox = json.loads((MAILBOXES_DIR / "pm.json").read_text(encoding="utf-8"))
+        types = [m.get("type") for m in pm_inbox]
+        assert "task_assign" in types, f"pm.json 应有 task_assign，实际：{types}"
+
+
+@needs_llm
+class TestGenericIntegrationPMExecute:
+    """T_int_g3: DigitalWorkerCrew(pm) → product_spec.md + task_done"""
+
+    def test_pm_execute_via_generic_crew(self, clean_crewai_hooks) -> None:  # noqa: ARG002
+        from crewai.hooks import clear_before_llm_call_hooks
+        from shared.digital_worker import DigitalWorkerCrew
+
+        pm_inbox_raw = (MAILBOXES_DIR / "pm.json").read_text(encoding="utf-8")
+        if '"task_assign"' not in pm_inbox_raw:
+            (MAILBOXES_DIR / "pm.json").write_text(
+                '[{"id":"stub-g01","from":"manager","to":"pm","type":"task_assign",'
+                '"subject":"产品文档设计任务","content":"请根据需求文档撰写产品规格文档，'
+                '写入/mnt/shared/design/product_spec.md，完成后发邮件通知manager","timestamp":"2026-01-01T00:00:00+00:00",'
+                '"status":"unread","processing_since":null}]',
+                encoding="utf-8",
+            )
+
+        clear_before_llm_call_hooks()
+        pm = DigitalWorkerCrew(
+            workspace_dir=PM_DIR,
+            sandbox_port=PM_PORT,
+            session_id=f"l27_test_pm_{uuid.uuid4().hex[:8]}",
+            has_shared=True,
+        )
+        pm.kickoff(
+            "请先通过 mailbox-ops skill 读取你的邮箱，获取 Manager 分配的任务。"
+            "然后读取需求文档，撰写产品规格文档写入 /mnt/shared/design/product_spec.md，"
+            "最后通过 mailbox-ops skill 向 Manager 发送完成通知。"
+        )
+
+        spec_file = SHARED_DIR / "design" / "product_spec.md"
+        assert spec_file.exists(), "product_spec.md 应该被写入"
+        assert spec_file.stat().st_size > 0
