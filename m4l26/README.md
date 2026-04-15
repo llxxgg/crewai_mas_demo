@@ -77,11 +77,11 @@ rm -rf workspace/manager/sessions workspace/pm/sessions
 ```bash
 cd /path/to/crewai_mas_demo
 
-docker compose -f m4l26/sandbox-docker-compose.yaml up -d
+docker compose -f m4l26/sandbox-docker-compose.yaml --profile manager --profile pm up -d
 
-# 验证（均应返回 200）
-curl -s http://localhost:8025/mcp | head -1   # Manager
-curl -s http://localhost:8026/mcp | head -1   # PM
+# 验证（均应有响应）
+curl -s http://localhost:8025/ | head -1   # Manager 沙盒
+curl -s http://localhost:8026/ | head -1   # PM 沙盒
 ```
 
 ### 步骤 2：Manager 启动（分配任务）
@@ -150,7 +150,7 @@ python -m pytest m4l26/test_m4l26_integration.py -v -s
 ### 步骤 7：停止沙盒
 
 ```bash
-docker compose -f m4l26/sandbox-docker-compose.yaml down
+docker compose -f m4l26/sandbox-docker-compose.yaml --profile manager --profile pm down
 ```
 
 ---
@@ -198,7 +198,7 @@ rm -rf workspace/manager/sessions workspace/pm/sessions
 
 **Q：停止沙盒？**
 ```bash
-docker compose -f m4l26/sandbox-docker-compose.yaml down
+docker compose -f m4l26/sandbox-docker-compose.yaml --profile manager --profile pm down
 ```
 
 **Q：模型切换？**

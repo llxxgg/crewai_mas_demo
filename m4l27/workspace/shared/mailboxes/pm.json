@@ -1,13 +1,1 @@
-[
-  {
-    "id": "2ea480e2-c070-43d0-b119-14f38f095e53",
-    "from": "manager",
-    "to": "pm",
-    "type": "task_assign",
-    "subject": "产品文档设计任务",
-    "content": "请根据需求（邮箱注册+邮件验证）撰写产品规格文档，写入/mnt/shared/design/product_spec.md，完成后发邮件通知我验收。",
-    "timestamp": "2026-04-15T11:31:50.573658+00:00",
-    "status": "in_progress",
-    "processing_since": "2026-04-15T11:32:46.046944+00:00"
-  }
-]
+[{"id":"stub-g01","from":"manager","to":"pm","type":"task_assign","subject":"产品文档设计任务","content":"请根据需求文档撰写产品规格文档，写入/mnt/shared/design/product_spec.md，完成后发邮件通知manager","timestamp":"2026-01-01T00:00:00+00:00","status":"unread","processing_since":null}]

@@ -235,7 +235,8 @@ def mark_done(
         messages = _read_inbox_file(inbox)
         for m in messages:
             if m.get("id") in id_set and m.get("status") == STATUS_IN_PROGRESS:
-                m["status"] = STATUS_DONE
+                m["status"]           = STATUS_DONE
+                m["processing_since"] = None
                 count += 1
         inbox.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -269,7 +270,8 @@ def mark_done_all_in_progress(
         messages = _read_inbox_file(inbox)
         for m in messages:
             if m.get("status") == STATUS_IN_PROGRESS:
-                m["status"] = STATUS_DONE
+                m["status"]           = STATUS_DONE
+                m["processing_since"] = None
                 count += 1
         inbox.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
 

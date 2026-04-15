@@ -1,37 +1,31 @@
-# 演示输入：XiaoPaw 宠物健康记录功能
+# 项目需求：XiaoPaw 宠物健康记录功能
 
-## 说明
+## 项目背景
 
-本文件仅用于演示目的。实际运行时，需求已预置于：
-`workspace/shared/needs/requirements.md`
+XiaoPaw 是一款宠物管理应用，用户当前可以记录宠物基本信息（名字、品种、年龄）。
+本次需求：新增宠物健康记录功能，让用户能追踪宠物的疫苗接种和就医记录。
 
-Manager 在步骤1中将直接读取上述路径，无需手动传入需求文本。
+## 功能需求
 
-## 演示流程
+### F-01：疫苗记录
+- 用户可以添加宠物的疫苗接种记录（疫苗名称、接种日期、下次到期日）
+- 用户可以查看宠物的历史疫苗记录列表
+- 临近到期（30天内）时，在宠物主页显示提醒标识
 
-```
-步骤1 ── Manager 读取 /mnt/shared/needs/requirements.md
-             ↓
-         Manager 发邮件给 PM（type: task_assign）
-             ↓
-步骤2 ── PM 读取自己的邮箱（read_inbox）
-             ↓
-         PM 读取 /mnt/shared/needs/requirements.md
-             ↓
-         PM 撰写产品文档 → 写入 /mnt/shared/design/product_spec.md
-             ↓
-         PM 发邮件给 Manager（type: task_done）
-             ↓
-步骤3 ── Manager 读取自己的邮箱（read_inbox）
-             ↓
-         Manager 读取 /mnt/shared/design/product_spec.md
-             ↓
-         Manager 验收 → 写入 /workspace/review_result.md
-```
+### F-02：就医记录
+- 用户可以添加就医记录（日期、医院名称、就医原因、诊断结果、费用）
+- 用户可以查看历史就医记录，支持按日期排序
+- 就医记录支持添加备注（最多 500 字）
 
-## 启动方式
+## 验收标准（DoD）
 
-```bash
-cd crewai_mas_demo/m4l26
-python m4l26_run.py
-```
+1. 用户可以为每只宠物独立管理健康记录（不同宠物数据不互相干扰）
+2. 所有记录持久化存储，App 重启后数据不丢失
+3. 疫苗到期提醒在宠物主页正确显示（到期日期在 30 天内）
+4. 就医记录按日期倒序展示（最新记录在最前）
+5. 产品文档必须包含：产品概述 + 用户故事 + 功能规格 + 验收标准
+
+## 优先级
+
+P0（本次必须交付）：F-01 疫苗记录 + F-02 就医记录核心流程
+P1（可延后）：批量导入历史记录、数据导出功能
