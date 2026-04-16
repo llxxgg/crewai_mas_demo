@@ -4,9 +4,26 @@
 
 | 工具 | 用途 |
 |------|------|
-| skill_loader | 调用 sop_manager（参考型，注入任务拆解 SOP）；调用 memory-save（保存输出到 workspace）|
+| skill_loader | 调用 sop_manager（参考型，注入任务拆解 SOP）；调用 write-output（写入产出文件到 workspace）|
 
-**执行顺序**：先加载 `sop_manager` 获取拆解规范 → 按 SOP 分析需求 → 输出 task_breakdown.md → 用 `memory-save` 保存至 `/workspace/task_breakdown.md`。
+**执行顺序**：先加载 `sop_manager` 获取拆解规范 → 按 SOP 分析需求 → 输出 task_breakdown.md → 用 `write-output` 保存至 `/workspace/task_breakdown.md`。
+
+> ⛔ **严禁**将产出内容输出到 Final Answer。必须通过 `write-output` Skill 调用 `sandbox_file_operations(action="write")` 实际写入文件：
+> ```
+> sandbox_file_operations(
+>   action="write",
+>   path="/workspace/task_breakdown.md",
+>   content="（task_breakdown 完整内容）"
+> )
+> ```
+> 写入后必须 read-back 验证：
+> ```
+> sandbox_file_operations(
+>   action="read",
+>   path="/workspace/task_breakdown.md"
+> )
+> ```
+> 确认文件内容完整，否则重试。
 
 ---
 

@@ -15,3 +15,7 @@ skills:
   - name: memory-save
     type: task        # 任务型：保存文件到 workspace
     enabled: true
+
+  - name: write-output
+    type: task        # 任务型：写入工作产出文件（产品规格文档、验收报告、技术设计等）
+    enabled: true

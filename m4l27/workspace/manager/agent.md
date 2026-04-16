@@ -12,7 +12,7 @@
 | `sop_selector` | task | 从 SOP 库选出最匹配的 SOP，写入 active_sop.md |
 | `notify_human` | reference | 通知 Human 审阅确认（需求/SOP/交付物检查点） |
 | `mailbox` | task | 向 PM 发任务邮件 / 读取 PM 的完成回报 |
-| `memory-save` | task | 将验收报告写入 `/workspace/review_result.md` |
+| `write-output` | task | 将验收报告写入 `/workspace/review_result.md` |
 
 > ⚠️ 通过 `skill_loader(skill_name='mailbox', task_context='...')` 调用，不要直接把 Skill 名当工具名。
 
@@ -134,7 +134,28 @@ python3 /workspace/skills/mailbox/scripts/mailbox_cli.py send \
 在沙盒中读取 `/mnt/shared/design/product_spec.md`，对照需求验收。
 
 ### Step 4 — 保存验收报告
-加载 `memory-save` Skill，将验收报告写入 `/workspace/review_result.md`。
+
+> ⛔ **严禁**将验收报告内容输出到 Final Answer。必须通过 `write-output` Skill 调用 `sandbox_file_operations(action="write")` 实际写入文件。
+
+加载 `write-output` Skill，在沙盒中执行写入：
+```
+sandbox_file_operations(
+  action="write",
+  path="/workspace/review_result.md",
+  content="（完整验收报告内容，格式见下方验收报告格式）"
+)
+```
+
+**写入后必须 read-back 验证**（确认文件内容完整）：
+
+```
+sandbox_file_operations(
+  action="read",
+  path="/workspace/review_result.md"
+)
+```
+
+如果文件内容被截断或为空，必须重新写入，不得假装成功。
 
 ### Step 5 — 标记消息完成
 加载 `mailbox` Skill，标记 task_done 消息已处理：

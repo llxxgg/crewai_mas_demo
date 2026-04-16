@@ -8,7 +8,7 @@
 |-------|------|------|
 | `mailbox` | task | 读取邮箱（获取 Manager 的任务邮件）；完成后回邮通知 Manager |
 | `product_design` | reference | 产品文档写作规范（直接注入上下文，无需沙盒） |
-| `memory-save` | task | 将产品规格文档写入 `/mnt/shared/design/product_spec.md` |
+| `write-output` | task | 将产品规格文档写入 `/mnt/shared/design/product_spec.md` |
 
 > ⚠️ 通过 `skill_loader(skill_name='mailbox', task_context='...')` 调用，不要直接把 `mailbox` 当工具名使用。
 
@@ -56,18 +56,33 @@ cat /mnt/shared/needs/requirements.md
 5. 范围外说明
 6. 待澄清事项（如有）
 
-### Step 5 — 写入共享工作区
+### Step 5 — 写入共享工作区（必须执行，不得跳过）
 
-加载 `memory-save` Skill（或直接在沙盒写文件），将产品文档写入：
-`/mnt/shared/design/product_spec.md`
+> ⛔ **严禁**将文档内容输出到 Final Answer。必须通过 `write-output` Skill 调用 `sandbox_file_operations(action="write")` 实际写入文件后，才能继续下一步。
 
-```bash
-cat > /mnt/shared/design/product_spec.md << 'EOF'
-（产品规格文档内容）
-EOF
+加载 `write-output` Skill，在沙盒中执行写入：
+
+```
+sandbox_file_operations(
+  action="write",
+  path="/mnt/shared/design/product_spec.md",
+  content="（Step 4 撰写的完整产品规格文档内容）"
+)
 ```
 
-验证：确认文件存在且有内容。
+**写入后必须 read-back 验证**（确认文件内容完整）：
+
+```
+sandbox_file_operations(
+  action="read",
+  path="/mnt/shared/design/product_spec.md"
+)
+```
+
+- ✅ 文件字节数与内容长度匹配 → 成功
+- ❌ 文件内容被截断 → 重试写入
+
+**如果验证失败（文件不存在或内容被截断），必须重新写入，不得跳过，不得继续下一步。**
 
 ### Step 6 — 向 Manager 发完成通知
 

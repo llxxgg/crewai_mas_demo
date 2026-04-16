@@ -23,6 +23,12 @@ skills:
     type: task       # 写入 workspace/ 文件，需要沙盒 MCP 执行
     enabled: true
 
+  # m4l25+：数字员工产出写入 Skill（产品规格文档、验收报告、技术设计等）
+  - name: write-output
+    path: ./write-output
+    type: task       # 写入 shared/workspace 产出文件，需要沙盒 MCP 执行
+    enabled: true
+
   - name: skill-creator
     path: ./skill-creator
     type: task       # 写入 skills/ 目录，需要沙盒 MCP 执行

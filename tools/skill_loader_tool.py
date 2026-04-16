@@ -210,10 +210,34 @@ class SkillLoaderTool(BaseTool):
         self._build_description()
 
     def _effective_skills_dir(self) -> Path:
-        """返回有效的 skills 目录：workspace-local 优先，否则退回全局 SKILLS_DIR。"""
+        """返回 workspace-local skills 目录（若已配置），否则返回全局 SKILLS_DIR。"""
         if self.skills_dir:
             return Path(self.skills_dir)
         return SKILLS_DIR
+
+    def _resolve_skill_path(self, skill_name: str) -> Path | None:
+        """
+        💡 核心点：双目录查找策略
+        1. 优先在 workspace-local skills 目录查找
+        2. 找不到时回退到全局 SKILLS_DIR
+        这样 workspace 只需放角色独有的 Skill，通用 Skill（memory-save、write-output 等）
+        不必在每个 workspace 中重复维护。
+        """
+        import logging
+        workspace_dir = self._effective_skills_dir()
+        skill_path = workspace_dir / skill_name
+        if skill_path.is_dir() and (skill_path / "SKILL.md").exists():
+            return skill_path
+        # 用 .resolve() 比较，避免符号链接 / 相对路径导致误判
+        if workspace_dir.resolve() != SKILLS_DIR.resolve():
+            global_path = SKILLS_DIR / skill_name
+            if global_path.is_dir() and (global_path / "SKILL.md").exists():
+                logging.debug(
+                    "Skill '%s' not found in workspace '%s', falling back to global SKILLS_DIR",
+                    skill_name, workspace_dir,
+                )
+                return global_path
+        return None
 
     # ── 阶段 1：元数据解析，构建 XML description ────────────────────────────
 
@@ -252,10 +276,9 @@ class SkillLoaderTool(BaseTool):
                 continue
             name = skill_conf["name"]
             skill_type = skill_conf.get("type", "task")
-            skill_path = effective_dir / name
-            if not skill_path.exists():
-                continue
-            if not (skill_path / "SKILL.md").exists():
+            # 💡 双目录查找：workspace 优先，全局回退
+            skill_path = self._resolve_skill_path(name)
+            if skill_path is None:
                 continue
 
             skill_md = (skill_path / "SKILL.md").read_text()
@@ -318,16 +341,22 @@ class SkillLoaderTool(BaseTool):
             f"IMPORTANT:【强制约束】所有脚本和文件操作必须在 AIO-Sandbox 中执行，禁止直接操作本地文件系统。\n"
             f"此 Skill 资源已挂载至沙盒绝对路径：{_base}/\n\n"
             f"可用沙盒工具及正确用法：\n"
-            f"1. sandbox_execute_bash：执行 Shell 命令。参数：cmd（必填，字符串）、cwd（可选，工作目录绝对路径）、timeout（可选，秒）。\n"
-            f"   - 运行脚本示例：如需运行脚本scripts/xxx.py，则调用sandbox_execute_bash且参数为cmd=\"python {_base}/scripts/xxx.py 参数\"，如需可设 cwd=\"{_base}\"。\n"
-            f"   - 安装依赖：cmd=\"pip install 包名\"，再重试任务。\n"
-            f"2. sandbox_file_operations：统一文件操作。参数：action（必填，'read'|'write'|'list'|'find'|'replace'|'search'）、path（必填，文件或目录绝对路径）、其余见工具说明。\n"
-            f"   - 读取单个文件：action=\"read\", path=\"文件绝对路径\"（示例：action=\"read\", path=\"{_base}/reference/xxx.md\"）。\n"
-            f"   - 写入文件：action=\"write\", path=\"文件绝对路径\", content=\"文件内容\"（先用 sandbox_execute_bash mkdir -p 确保目录存在）。\n"
+            f"1. sandbox_file_operations：统一文件操作（⚡ 写文件首选工具，不经过 shell 无截断风险）。\n"
+            f"   参数：action（必填，'read'|'write'|'list'|'find'|'replace'|'search'）、path（必填，文件或目录绝对路径）、其余见工具说明。\n"
+            f"   - 📝 写入文件（优先！）：action=\"write\", path=\"文件绝对路径\", content=\"文件完整内容\"。内容直接通过 MCP JSON 传输，无 shell 转义，不会截断。\n"
+            f"   - 读取单个文件：action=\"read\", path=\"文件绝对路径\"（示例：path=\"{_base}/reference/xxx.md\"）。\n"
             f"   - 列出目录：action=\"list\", path=\"目录绝对路径\"（如 path=\"{_base}/reference\"），可选 recursive=true。\n"
             f"   - 按模式查找文件：action=\"find\", path=\"目录\", pattern=\"*.md\"。\n"
-            f"3. sandbox_str_replace_editor：编辑文件。参数：command（'view'|'create'|'str_replace'|'insert'）、path（文件路径）等。\n"
-            f"4. sandbox_execute_code：执行代码片段。参数：code（必填）、language（'python'|'javascript'）、timeout（可选）。\n"
+            f"2. sandbox_execute_bash：执行 Shell 命令。参数：cmd（必填，字符串）、cwd（可选，工作目录绝对路径）、timeout（可选，秒）。\n"
+            f"   ⚠️ 警告：通过 bash 命令行传递大段文件内容（如 --content \"...\"）极易因 shell 特殊字符（引号、反引号、$变量等）导致内容静默截断！\n"
+            f"   ✅ bash 适用场景：运行脚本、安装依赖、执行系统命令——不得用于传递大段文本内容。\n"
+            f"   - 运行脚本示例：cmd=\"python {_base}/scripts/xxx.py 参数\"，如需可设 cwd=\"{_base}\"。\n"
+            f"   - 安装依赖：cmd=\"pip install 包名\"，再重试任务。\n"
+            f"3. sandbox_execute_code：执行代码片段（备用写文件方案）。参数：code（必填）、language（'python'|'javascript'）、timeout（可选）。\n"
+            f"   - 当需要写入大文件且 sandbox_file_operations write 不可用时，用 Python 代码直接写文件，避免 shell 转义问题。\n"
+            f"4. sandbox_str_replace_editor：编辑文件。参数：command（'view'|'create'|'str_replace'|'insert'）、path（文件路径）等。\n"
+            f"\n"
+            f"【写文件优先级】sandbox_file_operations(action='write') > sandbox_execute_code(python write) > ❌sandbox_execute_bash(--content)\n"
             f"</sandbox_execution_directive>"
         )
 

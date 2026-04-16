@@ -4,9 +4,26 @@
 
 | 工具 | 用途 |
 |------|------|
-| skill_loader | 调用 sop_dev（参考型，注入技术设计 SOP）；调用 memory-save（保存输出到 workspace）|
+| skill_loader | 调用 sop_dev（参考型，注入技术设计 SOP）；调用 write-output（写入产出文件到 workspace）|
 
-**执行顺序**：先加载 `sop_dev` 获取设计规范 → 按 SOP 完成技术设计 → 用 `memory-save` 保存至 `/workspace/tech_design.md`。
+**执行顺序**：先加载 `sop_dev` 获取设计规范 → 按 SOP 完成技术设计 → 用 `write-output` 保存至 `/workspace/tech_design.md`。
+
+> ⛔ **严禁**将产出内容输出到 Final Answer。必须通过 `write-output` Skill 调用 `sandbox_file_operations(action="write")` 实际写入文件：
+> ```
+> sandbox_file_operations(
+>   action="write",
+>   path="/workspace/tech_design.md",
+>   content="（tech_design 完整内容）"
+> )
+> ```
+> 写入后必须 read-back 验证：
+> ```
+> sandbox_file_operations(
+>   action="read",
+>   path="/workspace/tech_design.md"
+> )
+> ```
+> 确认文件内容完整，否则重试。
 
 ---
 

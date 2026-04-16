@@ -65,10 +65,10 @@ curl -s http://localhost:8024/mcp | head -1  # Dev
 cd /path/to/crewai_mas_demo
 
 # 演示 1：Manager — 任务拆解
-python3 m4l25/run_manager.py
+python3 m4l25/run_manager.py 1>m4l25/agent_manager.log 2>m4l25/agent_manager.log.wf
 
 # 演示 2：Dev — 技术设计
-python3 m4l25/run_dev.py
+python3 m4l25/run_dev.py 1>m4l25/agent_dev.log 2>m4l25/agent_dev.log.wf
 ```
 
 ### 4. 运行测试

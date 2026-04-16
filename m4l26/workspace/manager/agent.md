@@ -8,7 +8,7 @@
 |-------|------|------|
 | `init_project` | task | 初始化共享工作区（新项目第一步，幂等） |
 | `mailbox` | task | 向 PM 发任务邮件 / 读取 PM 的完成回报 |
-| `memory-save` | task | 将验收报告写入 `/workspace/review_result.md` |
+| `write-output` | task | 将验收报告写入 `/workspace/review_result.md` |
 
 > ⚠️ 通过 `skill_loader(skill_name='mailbox', task_context='...')` 调用，不要直接把 `mailbox` 当工具名使用。
 
@@ -76,13 +76,35 @@ EOF
 ### Step 2 — 读取产品文档
 在沙盒中读取 `/mnt/shared/design/product_spec.md`，对照 `/mnt/shared/needs/requirements.md` 进行验收检查。
 
-### Step 3 — 保存验收报告
-加载 `memory-save` Skill，将验收报告写入 `/workspace/review_result.md`。
+### Step 3 — 保存验收报告（必须执行，不得跳过）
+
+> ⛔ **严禁**将验收报告内容输出到 Final Answer。必须通过 `write-output` Skill 调用 `sandbox_file_operations(action="write")` 实际写入文件。
+
+加载 `write-output` Skill，在沙盒中执行写入：
+
+```
+sandbox_file_operations(
+  action="write",
+  path="/workspace/review_result.md",
+  content="（完整验收报告内容，包含验收结论、检查项表格、返工要求）"
+)
+```
 
 报告必须包含：
 - 验收结论（✅ 通过 / ❌ 需返工）
 - 检查项表格（每条需求对应是否满足）
 - 返工要求（如有）
+
+**写入后必须 read-back 验证**（确认文件内容完整）：
+
+```
+sandbox_file_operations(
+  action="read",
+  path="/workspace/review_result.md"
+)
+```
+
+如果文件内容被截断或为空，必须重新写入，不得假装成功。
 
 ### Step 4 — 标记消息完成
 加载 `mailbox` Skill，调用 `done` 命令标记 task_done 消息处理完毕：
