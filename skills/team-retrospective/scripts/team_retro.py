@@ -248,7 +248,7 @@ def _call_llm(summary_text: str, api_key: str) -> tuple[str, list[dict]]:
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
     response = client.chat.completions.create(
-        model="qwen-plus",
+        model="qwen3.6-max-preview",
         messages=[
             {"role": "system", "content": _TEAM_RETRO_SYSTEM_PROMPT},
             {"role": "user",   "content": summary_text},

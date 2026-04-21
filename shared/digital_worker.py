@@ -126,7 +126,7 @@ class DigitalWorkerCrew:
         self.workspace_dir = Path(workspace_dir).resolve()
         self.sandbox_port = sandbox_port
         self.session_id = session_id or f"session_{uuid4().hex[:8]}"
-        self.model = model or os.getenv("DIGITAL_WORKER_MODEL", "qwen-max")
+        self.model = model or os.getenv("DIGITAL_WORKER_MODEL", "qwen3.6-max-preview")
         self.temperature = temperature
         self.has_shared = has_shared
         self.max_iter = max_iter

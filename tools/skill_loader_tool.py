@@ -95,7 +95,7 @@ def build_skill_crew(
         #tool_filter=SANDBOX_TOOL_FILTER, # 暂时不使用工具过滤，因为目前工具都用得上
     )
 
-    skill_llm = AliyunLLM(model="qwen3-max", region="cn", temperature=0.3)
+    skill_llm = AliyunLLM(model="qwen3.6-max-preview", region="cn", temperature=0.3)
 
     skill_agent = Agent(
         role=f"{skill_name.upper()} Skill 执行专家",

@@ -44,20 +44,16 @@ REQUIREMENTS_FILE = WORKSPACE_DIR / "requirements.md"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM 工厂
-# - 主 Orchestrator：qwen-max（失败分析、派单策略）
-# - 子 Agent 默认：qwen-plus；QA Engineer / Debugger：qwen-max（排障与验证更难）
+# - 主 Orchestrator 与所有子 Agent：qwen3.6-max-preview
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _llm(model: str = "qwen-plus") -> AliyunLLM:
+def _llm(model: str = "qwen3.6-max-preview") -> AliyunLLM:
     return AliyunLLM(model=model, region="cn", temperature=0.7)
 
 
 def _llm_for_sub_agent(role: str) -> AliyunLLM:
-    """按角色选用模型：QA / Debugger 用 qwen-max，其余 qwen-plus。"""
-    rl = (role or "").strip().lower()
-    if "debugger" in rl or "qa engineer" in rl:
-        return _llm("qwen-max")
-    return _llm("qwen-plus")
+    """所有子 Agent 统一使用 qwen3.6-max-preview。"""
+    return _llm("qwen3.6-max-preview")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -431,7 +427,7 @@ def build_orchestrator() -> tuple[Agent, Task]:
             f"{sop_content}"
         ),
         tools=[SpawnSubAgentTool(), SpawnParallelTool(), FileReadTool()],
-        llm=_llm("qwen-max"),
+        llm=_llm("qwen3.6-max-preview"),
         verbose=True,
     )
 
