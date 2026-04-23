@@ -6,6 +6,7 @@ hooks:
     - handler: langfuse_trace.before_llm_handler
   BEFORE_TOOL_CALL:
     - handler: structured_log.before_tool_handler
+    - handler: langfuse_trace.before_tool_handler
   AFTER_TOOL_CALL:
     - handler: structured_log.after_tool_handler
     - handler: langfuse_trace.after_tool_handler

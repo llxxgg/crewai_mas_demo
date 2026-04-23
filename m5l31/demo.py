@@ -18,6 +18,9 @@ from pathlib import Path
 _DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_DIR))
 
+from dotenv import load_dotenv
+load_dotenv(_DIR / ".env", override=True)
+
 from crewai import Agent, Crew, LLM, Task
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field

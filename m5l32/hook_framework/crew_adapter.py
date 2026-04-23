@@ -1,6 +1,10 @@
 """F5: CrewAI 机制 → HookRegistry 事件映射。
 
-31课升级：dispatch_gate + pending_deny + success 检测 + token 估算。
+32课：复用31课 dispatch_gate + pending_deny + success 检测 + token 估算。
+30课对齐：prompt_preview / tool_input / tool_output / llm_response 富元数据。
+
+注意：不使用 @after_llm_call —— 注册该 hook 会干扰 CrewAI
+的 function calling 工具调度。LLM 回复数据改从 step_callback 获取。
 
 映射关系：
 ┌──────────────────────────┬───────────────────────────┐
@@ -26,6 +30,14 @@ from crewai.hooks import (
 
 from .registry import EventType, GuardrailDeny, HookContext, HookRegistry
 
+_MAX_TEXT = 2000
+
+
+def _truncate(text: str, limit: int = _MAX_TEXT) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"... [truncated, {len(text)} chars total]"
+
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) * 2 // 3)
@@ -40,6 +52,9 @@ class CrewObservabilityAdapter:
         self._cleaned = False
         self._pending_input_tokens = 0
         self._pending_deny: GuardrailDeny | None = None
+        self._last_agent_role = ""
+        self._task_description = ""
+        self._last_prompt_preview = ""
 
     def install_global_hooks(self):
         registry = self._registry
@@ -48,6 +63,14 @@ class CrewObservabilityAdapter:
         @before_llm_call
         def _before_llm(context):
             agent_id = getattr(getattr(context, "agent", None), "role", "")
+            self._last_agent_role = agent_id
+
+            task = getattr(context, "task", None)
+            if task and not self._task_description:
+                self._task_description = _truncate(
+                    getattr(task, "description", "") or ""
+                )
+
             if not self._current_turn_has_llm:
                 self._turn_count += 1
                 self._current_turn_has_llm = True
@@ -60,12 +83,19 @@ class CrewObservabilityAdapter:
                         turn_number=self._turn_count,
                     ),
                 )
-            messages = getattr(context, "messages", None)
+
+            messages = getattr(context, "messages", [])
+            preview = ""
             if messages:
+                last_msg = messages[-1]
+                content = last_msg.get("content", "") if isinstance(last_msg, dict) else str(last_msg)
+                preview = _truncate(str(content), 500)
                 text_len = sum(len(str(m)) for m in messages)
                 self._pending_input_tokens = max(1, text_len * 2 // 3)
             else:
                 self._pending_input_tokens = 0
+            self._last_prompt_preview = preview
+
             registry.dispatch(
                 EventType.BEFORE_LLM,
                 HookContext(
@@ -74,6 +104,7 @@ class CrewObservabilityAdapter:
                     session_id=sid,
                     turn_number=self._turn_count,
                     input_tokens=self._pending_input_tokens,
+                    metadata={"prompt_preview": preview},
                 ),
             )
             return None
@@ -100,9 +131,11 @@ class CrewObservabilityAdapter:
 
         @after_tool_call
         def _after_tool(context):
-            output = str(getattr(context, "tool_output", ""))
+            tool_result = _truncate(
+                str(getattr(context, "tool_result", "") or "")
+            )
             is_error = any(
-                kw in output.lower()
+                kw in tool_result.lower()
                 for kw in ["error", "exception", "traceback", "failed"]
             )
             try:
@@ -111,10 +144,11 @@ class CrewObservabilityAdapter:
                     HookContext(
                         event_type=EventType.AFTER_TOOL_CALL,
                         tool_name=context.tool_name,
+                        tool_input=dict(context.tool_input),
                         success=not is_error,
                         session_id=sid,
                         turn_number=self._turn_count,
-                        metadata={"output": output[:500]},
+                        metadata={"tool_output": tool_result},
                     ),
                 )
             except GuardrailDeny as e:
@@ -125,10 +159,21 @@ class CrewObservabilityAdapter:
         sid = self._session_id
 
         def callback(step):
-            from crewai.agents.parser import AgentAction
+            from crewai.agents.parser import AgentAction, AgentFinish
 
-            output_str = str(getattr(step, "output", ""))
-            est_output_tokens = _estimate_tokens(output_str)
+            step_output = ""
+            tool_name = ""
+            llm_response = ""
+
+            if isinstance(step, AgentAction):
+                tool_name = getattr(step, "tool", "")
+                step_output = _truncate(str(getattr(step, "result", "") or ""))
+                llm_response = _truncate(str(getattr(step, "text", "") or ""))
+            elif isinstance(step, AgentFinish):
+                step_output = _truncate(str(getattr(step, "output", "")))
+                llm_response = _truncate(str(getattr(step, "text", "") or ""))
+
+            est_output_tokens = _estimate_tokens(step_output)
 
             try:
                 registry.dispatch_gate(
@@ -137,15 +182,21 @@ class CrewObservabilityAdapter:
                         event_type=EventType.AFTER_TURN,
                         session_id=sid,
                         turn_number=self._turn_count,
-                        tool_name=step.tool if isinstance(step, AgentAction) else "",
+                        agent_id=self._last_agent_role,
+                        tool_name=tool_name,
                         input_tokens=self._pending_input_tokens,
                         output_tokens=est_output_tokens,
-                        metadata={"output": output_str[:500]},
+                        metadata={
+                            "output": step_output,
+                            "llm_response": llm_response,
+                            "prompt_preview": self._last_prompt_preview,
+                        },
                     ),
                 )
             finally:
                 self._current_turn_has_llm = False
                 self._pending_input_tokens = 0
+                self._last_prompt_preview = ""
 
             pending = self._pending_deny
             self._pending_deny = None
@@ -159,12 +210,20 @@ class CrewObservabilityAdapter:
         sid = self._session_id
 
         def callback(task_output):
+            raw = _truncate(str(getattr(task_output, "raw", str(task_output))))
+            desc = getattr(task_output, "description", "") or self._task_description
+
             registry.dispatch(
                 EventType.TASK_COMPLETE,
                 HookContext(
                     event_type=EventType.TASK_COMPLETE,
                     session_id=sid,
-                    metadata={"raw_output": str(task_output)[:500]},
+                    task_name=_truncate(str(desc), 500),
+                    agent_id=self._last_agent_role,
+                    metadata={
+                        "raw_output": raw,
+                        "task_description": _truncate(str(desc), 500),
+                    },
                 ),
             )
 
