@@ -10,6 +10,7 @@ _client = None
 _trace_id = None
 _trace_context = None
 _root_span = None
+_session_id = None
 
 
 def _ensure_client():
@@ -20,10 +21,17 @@ def _ensure_client():
     return _client
 
 
+def _tag_span(span):
+    if _session_id:
+        span._otel_span.set_attribute("langfuse.trace.name", f"m5l31-{_session_id}")
+        span._otel_span.set_attribute("session.id", _session_id)
+
+
 def _ensure_trace(ctx):
-    global _trace_id, _trace_context, _root_span
+    global _trace_id, _trace_context, _root_span, _session_id
     client = _ensure_client()
     if _trace_id is None:
+        _session_id = ctx.session_id
         _trace_id = client.create_trace_id(seed=ctx.session_id)
         _trace_context = TraceContext(trace_id=_trace_id)
         _root_span = client.start_observation(
@@ -32,6 +40,7 @@ def _ensure_trace(ctx):
             as_type="chain",
             metadata={"session_id": ctx.session_id},
         )
+        _tag_span(_root_span)
     return _trace_context
 
 
@@ -48,6 +57,7 @@ def after_tool_handler(ctx):
         as_type="tool",
         metadata={"tool": ctx.tool_name, "turn": ctx.turn_number},
     )
+    _tag_span(span)
     span.end()
 
 
@@ -62,6 +72,7 @@ def after_turn_handler(ctx):
         model=model,
         metadata=ctx.metadata,
     )
+    _tag_span(gen)
     gen.end()
 
 
@@ -74,11 +85,12 @@ def task_complete_handler(ctx):
         as_type="span",
         metadata=ctx.metadata,
     )
+    _tag_span(span)
     span.end()
 
 
 def flush_and_close(ctx):
-    global _trace_id, _trace_context, _root_span
+    global _trace_id, _trace_context, _root_span, _session_id
     if _root_span:
         _root_span.end()
     if _client:
@@ -86,3 +98,4 @@ def flush_and_close(ctx):
     _trace_id = None
     _trace_context = None
     _root_span = None
+    _session_id = None

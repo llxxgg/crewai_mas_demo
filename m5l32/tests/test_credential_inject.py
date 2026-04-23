@@ -6,7 +6,7 @@ import pytest
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from security.credential_inject import SecureToolWrapper
+from shared_hooks.credential_inject import SecureToolWrapper
 
 
 class QueryInput(BaseModel):

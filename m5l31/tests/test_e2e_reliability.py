@@ -6,6 +6,7 @@
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from reliability import install_reliability_hooks
+from shared_hooks import install_reliability_hooks
 
 pytestmark = pytest.mark.integration
 
@@ -85,16 +86,37 @@ def _make_crew(tool, registry, adapter, max_iter=15):
     )
 
 
+def _make_session_id(label: str) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"e2e-{label}-{ts}"
+
+
+def _setup_full_hooks(label, reliability_config):
+    """加载 YAML hooks（观测）+ reliability hooks（策略），返回 (registry, adapter, strategies, session_id)。"""
+    from crewai.hooks import clear_all_global_hooks
+    clear_all_global_hooks()
+
+    session_id = _make_session_id(label)
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_two_layers(
+        global_dir=_DIR / "shared_hooks",
+        workspace_dir=_DIR / "workspace" / "demo_agent",
+    )
+    strategies = install_reliability_hooks(registry, config=reliability_config)
+
+    adapter = CrewObservabilityAdapter(registry, session_id=session_id)
+    adapter.install_global_hooks()
+    return registry, adapter, strategies, session_id
+
+
 def test_e2e_normal_execution():
     """正常执行：无 deny，metrics 有数据。"""
-    registry = HookRegistry()
-    strategies = install_reliability_hooks(registry, config={
+    registry, adapter, strategies, sid = _setup_full_hooks("normal", {
         "budget_usd": 10.0,
         "loop_threshold": 10,
     })
-
-    adapter = CrewObservabilityAdapter(registry, session_id="test_normal")
-    adapter.install_global_hooks()
 
     crew = _make_crew(KnowledgeSearchTool(), registry, adapter)
     try:
@@ -110,14 +132,10 @@ def test_e2e_normal_execution():
 
 def test_e2e_loop_detection():
     """循环检测：LoopingTool 导致重复状态 → GuardrailDeny 或 metrics 记录循环。"""
-    registry = HookRegistry()
-    strategies = install_reliability_hooks(registry, config={
+    registry, adapter, strategies, sid = _setup_full_hooks("loop", {
         "budget_usd": 10.0,
         "loop_threshold": 2,
     })
-
-    adapter = CrewObservabilityAdapter(registry, session_id="test_loop")
-    adapter.install_global_hooks()
 
     llm = _make_llm()
     agent = Agent(
@@ -159,14 +177,10 @@ def test_e2e_loop_detection():
 
 def test_e2e_cost_guard():
     """成本围栏：极低预算 → GuardrailDeny。"""
-    registry = HookRegistry()
-    strategies = install_reliability_hooks(registry, config={
+    registry, adapter, strategies, sid = _setup_full_hooks("cost", {
         "budget_usd": 0.0001,
         "loop_threshold": 100,
     })
-
-    adapter = CrewObservabilityAdapter(registry, session_id="test_cost")
-    adapter.install_global_hooks()
 
     crew = _make_crew(KnowledgeSearchTool(), registry, adapter)
     guardrail_hit = False

@@ -1,4 +1,4 @@
-"""可靠性策略：重试追踪 + 循环检测 + 成本围栏。"""
+"""共享 Hook：观测（YAML 加载）+ 可靠性策略（代码注册）。"""
 
 from hook_framework.registry import EventType
 
@@ -30,16 +30,12 @@ def install_reliability_hooks(
         retry.after_tool_handler,
         name="retry_tracker",
     )
-    # 循环检测也挂在 AFTER_TOOL_CALL：覆盖 native function calling 路径
-    # （该路径下 step_callback 仅在最终回答时触发）
     registry.register(
         EventType.AFTER_TOOL_CALL,
         loop.after_tool_handler,
         name="loop_detector.tool",
     )
 
-    # cost_guard.accumulate 先于 loop_detector：
-    # cost 已发生（LLM 调用已完成），即使循环检测 deny，成本也应记录
     registry.register(
         EventType.AFTER_TURN,
         cost.after_turn_handler,

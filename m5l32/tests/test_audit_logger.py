@@ -5,7 +5,7 @@ from pathlib import Path
 
 from hook_framework.registry import EventType, HookContext
 
-from security.audit_logger import SecurityAuditLogger
+from shared_hooks.audit_logger import SecurityAuditLogger
 
 
 # T17: record_event 累计事件

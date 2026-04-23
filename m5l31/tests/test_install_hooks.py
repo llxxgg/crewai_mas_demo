@@ -4,7 +4,7 @@ import pytest
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext, HookRegistry
 
-from reliability import install_reliability_hooks
+from shared_hooks import install_reliability_hooks
 
 
 def test_install_registers_all_handlers():

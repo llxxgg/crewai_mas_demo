@@ -4,7 +4,7 @@ import pytest
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext
 
-from security.sandbox_guard import SandboxGuard
+from shared_hooks.sandbox_guard import SandboxGuard
 
 
 def _tool_ctx(tool_input: str, tool_name: str = "knowledge_search"):

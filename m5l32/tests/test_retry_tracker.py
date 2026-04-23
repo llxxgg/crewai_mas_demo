@@ -2,7 +2,7 @@
 
 from hook_framework.registry import EventType, HookContext
 
-from reliability.retry_tracker import RetryTracker
+from shared_hooks.retry_tracker import RetryTracker
 
 
 def _tool_ctx(tool_name: str, success: bool):

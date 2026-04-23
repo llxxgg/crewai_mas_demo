@@ -4,8 +4,7 @@ import pytest
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext, HookRegistry
 
-from reliability import install_reliability_hooks
-from security import install_security_hooks
+from shared_hooks import install_reliability_hooks, install_security_hooks
 
 
 # T20: install 注册所有 handler

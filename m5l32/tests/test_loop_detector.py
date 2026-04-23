@@ -4,7 +4,7 @@ import pytest
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext
 
-from reliability.loop_detector import LoopDetector
+from shared_hooks.loop_detector import LoopDetector
 
 
 def _turn_ctx(tool_name: str, output: str, turn: int = 1):

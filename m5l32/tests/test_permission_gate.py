@@ -5,7 +5,7 @@ from pathlib import Path
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext
 
-from security.permission_gate import PermissionGate, PermissionLevel
+from shared_hooks.permission_gate import PermissionGate, PermissionLevel
 
 
 def _tool_ctx(tool_name: str = "knowledge_search"):

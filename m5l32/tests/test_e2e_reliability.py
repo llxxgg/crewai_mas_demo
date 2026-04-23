@@ -22,7 +22,7 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from reliability import install_reliability_hooks
+from shared_hooks import install_reliability_hooks
 
 pytestmark = pytest.mark.integration
 

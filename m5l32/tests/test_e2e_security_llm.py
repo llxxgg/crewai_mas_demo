@@ -29,9 +29,8 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from reliability import install_reliability_hooks
-from security import install_security_hooks
-from security.credential_inject import SecureToolWrapper
+from shared_hooks import install_reliability_hooks, install_security_hooks
+from shared_hooks.credential_inject import SecureToolWrapper
 
 pytestmark = pytest.mark.integration
 

@@ -4,7 +4,7 @@ import pytest
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext
 
-from reliability.cost_guard import CostGuard
+from shared_hooks.cost_guard import CostGuard
 
 
 def _turn_ctx(input_tokens: int = 100, output_tokens: int = 50, turn: int = 1):
