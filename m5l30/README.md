@@ -287,3 +287,209 @@ python3 -m pytest tests/ -v
 | test_adapter.py | T_extra4 | tool call 事件映射 |
 | test_e2e_hooks.py | T15 | **全链路**：真实 Crew → 7种事件×2层 hook 全部触发 |
 | test_e2e_hooks.py | T16 | **Langfuse**：真实 Crew → trace 含 TOOL + GENERATION observations |
+
+---
+
+## 课堂代码演示学习指南
+
+本节帮你按课程教学顺序阅读代码，建立完整的理解链路。
+
+### 整体架构一览
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         demo.py                                 │
+│  HookRegistry + HookLoader → 加载 hooks.yaml（两层合并）         │
+│  CrewObservabilityAdapter → 桥接 CrewAI 原生 Hook                │
+│  Agent + SkillLoader + Crew → 执行任务                           │
+└─────────────┬───────────────────────────────┬───────────────────┘
+              │                               │
+    ┌─────────▼──────────┐         ┌──────────▼──────────┐
+    │   hook_framework/  │         │   shared_hooks/     │
+    │                    │         │                     │
+    │  registry.py       │         │  hooks.yaml         │
+    │   EventType(7)     │         │   7种事件 → 12个    │
+    │   HookContext      │◄────────│     handler 映射    │
+    │   HookRegistry     │         │                     │
+    │                    │         │  structured_log.py   │
+    │  loader.py         │         │   → stderr JSON      │
+    │   YAML解析+动态导入 │         │                     │
+    │                    │         │  langfuse_trace.py   │
+    │  crew_adapter.py   │         │   → Langfuse trace   │
+    │   CrewAI 4种机制   │         └─────────────────────┘
+    │   → 7种事件映射    │
+    └────────────────────┘
+```
+
+### 学习路线（建议按顺序阅读）
+
+---
+
+#### 第一步：理解事件模型——EventType + HookContext + HookRegistry
+
+**对应课文**：第二节"5+2 事件体系"、第三节"HookRegistry"
+
+**阅读文件**：`hook_framework/registry.py`
+
+| 重点区域 | 行号 | 看什么 |
+|---------|------|--------|
+| `EventType` 枚举 | 16-23 | 7 个事件对齐 Agent Turn 生命周期 |
+| `HookContext` 数据类 | 33-49 | `frozen=True`——不可变，防止 handler 互相污染 |
+| `register()` | 57-59 | handler 按事件类型存入列表，支持多个 handler |
+| `dispatch()` | 61-70 | try-except 包裹每个 handler——一个崩溃不影响其他 |
+| `summary()` | 89-93 | 自省接口——打印注册的所有 handler |
+
+**理解要点**：`dispatch()` 的异常隔离是核心设计。如果 Langfuse 网络超时，结构化日志照常输出——这就是课文说的"观测系统不能成为生产系统的单点故障"。
+
+**验证**：`python3 -m pytest tests/test_registry.py -v` 看 6 个测试覆盖的场景。
+
+---
+
+#### 第二步：看声明式配置——hooks.yaml
+
+**对应课文**：第三节"声明式配置"
+
+**阅读文件**：`shared_hooks/hooks.yaml`
+
+```yaml
+hooks:
+  BEFORE_TURN:
+    - handler: structured_log.before_turn_handler  # ← 模块名.函数名
+  BEFORE_LLM:
+    - handler: structured_log.before_llm_handler
+    - handler: langfuse_trace.before_llm_handler   # ← 同一个事件可以有多个 handler
+  ...
+```
+
+**理解要点**：配置格式是 `事件名 → handler 列表`。同一个事件可以挂多个 handler（如 `BEFORE_LLM` 同时触发日志和 Langfuse）。添加新的观测能力只需在 YAML 里加一行，不改框架代码。
+
+---
+
+#### 第三步：看最简单的 handler——structured_log
+
+**对应课文**：第四节"结构化日志"
+
+**阅读文件**：`shared_hooks/structured_log.py`
+
+| 重点 | 看什么 |
+|------|--------|
+| `_emit(ctx)` | 从 HookContext 提取字段 → 构建 JSON → `print(json, file=sys.stderr)` |
+| 各 handler 函数 | 每个只是调用 `_emit(ctx)` + 少量字段定制 |
+
+**理解要点**：这是最简单的 handler 实现——纯函数，无状态，只输出。理解了这个，就理解了 handler 的接口约定：接收 `HookContext`，做想做的事，不返回值。
+
+---
+
+#### 第四步：看 Langfuse handler——从"能看"到"能追踪"
+
+**对应课文**：第四节"Langfuse 全链路追踪"
+
+**阅读文件**：`shared_hooks/langfuse_trace.py`
+
+| 重点区域 | 看什么 |
+|---------|--------|
+| `_ensure_client()` | 懒初始化——首次事件触发时才创建 Langfuse 客户端 |
+| `_ensure_trace()` | `create_trace_id(seed=session_id)` 保证幂等性——同一 session 同一 trace |
+| `before_tool_handler()` | 开启 TOOL span → 存入 `_pending_spans` dict |
+| `after_tool_handler()` | 从 `_pending_spans` 取出 span → 写入 output → `end()` |
+| `after_turn_handler()` | 创建 GENERATION observation：prompt 摘要 + LLM 回复 |
+| `flush_and_close()` | 关闭孤儿 span + 结束根 span + flush 客户端 |
+
+**理解要点**：TOOL span 用"开启-关闭"模式（`_pending_spans` dict）捕获真实执行耗时。GENERATION 在 `AFTER_TURN` 一次性创建（因为 `@after_llm_call` 不能用——会干扰 CrewAI 的 function calling）。
+
+---
+
+#### 第五步：看加载引擎——HookLoader
+
+**对应课文**：第三节"两层加载"
+
+**阅读文件**：`hook_framework/loader.py`
+
+| 重点区域 | 看什么 |
+|---------|--------|
+| `load_from_directory()` | 解析 hooks.yaml → `importlib.util.spec_from_file_location` 动态导入 |
+| 路径穿越防护 | `module_path.is_relative_to(hooks_dir.resolve())` 阻止 `../../` 攻击 |
+| `load_two_layers()` | 先加载 `global_dir` → 再加载 `workspace_dir/hooks/`，追加不覆盖 |
+
+**理解要点**：两层加载的意义——全局层（结构化日志 + Langfuse）是每个 Agent 的基线保障，Workspace 层（审计日志）是特定 Agent 的业务定制。新建 Agent 时，全局层自动继承。
+
+---
+
+#### 第六步：看适配层——CrewAI 4种机制 → 7种事件
+
+**对应课文**：第三节"CrewAI 适配层"
+
+**阅读文件**：`hook_framework/crew_adapter.py`
+
+| 重点区域 | 看什么 |
+|---------|--------|
+| `_before_llm()` | `_current_turn_has_llm` flag：首次 LLM 调用触发 BEFORE_TURN + BEFORE_LLM，后续只触发 BEFORE_LLM |
+| `_before_tool()` / `_after_tool()` | 直接映射 + 工具输入/输出截断 |
+| `make_step_callback()` | step_callback → AFTER_TURN，重置 `_current_turn_has_llm` 开始新轮 |
+| `cleanup()` | `_cleaned` flag 防止双重触发 + `clear_*_hooks()` 清理全局注册 |
+| 不使用 `@after_llm_call` | 注释说明：注册该 hook 会干扰 CrewAI 的 function calling 工具调度 |
+
+**理解要点**：适配层的核心价值是**框架无关性**——如果将来换成 LangChain 或 AutoGen，只需重写适配层，所有 handler（日志、Langfuse、审计）一行不改。
+
+---
+
+#### 第七步：看 Workspace 层定制——task_audit
+
+**对应课文**：第三节"两层架构"的 Workspace 层
+
+**阅读文件**：`workspace/demo_agent/hooks/`
+
+- `hooks.yaml`：只注册了一个 handler——`TASK_COMPLETE → task_audit.write_audit_entry`
+- `task_audit.py`：在任务完成时往 `audit.log` 写一条 JSON（session_id + 时间戳 + 产出预览）
+
+**理解要点**：这个 handler 只有 demo_agent 有，其他 Agent 不会被审计。这就是 Workspace 层的意义——业务定制，而非全局行为。
+
+---
+
+#### 第八步：端到端串联——demo.py
+
+**对应课文**：整课的代码演示部分
+
+**阅读文件**：`demo.py`
+
+| 阶段 | 行号范围 | 做了什么 |
+|------|---------|---------|
+| Hook 初始化 | 前半段 | `HookRegistry()` → `HookLoader.load_two_layers()` → 打印 handler 注册情况 |
+| CrewAI 适配 | 中段 | `CrewObservabilityAdapter` 安装全局 hooks + atexit 注册 cleanup |
+| Agent 构建 | 中段 | `build_bootstrap_prompt()`（25课复用）+ `SkillLoaderTool` + `LLM` + `Agent` |
+| 执行 | 后段 | `crew.kickoff()` → Hook 自动拦截所有事件 → 日志 + Langfuse |
+| 清理 | 末段 | `adapter.cleanup()` → SESSION_END → flush Langfuse |
+
+**理解要点**：demo.py 的 Agent 构建部分和 25 课完全相同（Bootstrap + SkillLoader + 沙盒）。唯一的新增是 Hook 框架的初始化和适配——Agent 代码本身不感知任何观测逻辑。
+
+---
+
+#### 第九步：验证——跑测试看效果
+
+```bash
+cd /path/to/crewai_mas_demo/m5l30
+
+# 1. 单元测试（18个，无需 LLM/Langfuse）
+python3 -m pytest tests/ -v --ignore=tests/test_e2e_hooks.py
+
+# 2. 端到端演示（需 LLM + Langfuse + 沙盒）
+python3 demo.py
+
+# 3. 查看 Langfuse Dashboard
+#    → http://localhost:3000 → 选择 course-demo 项目 → Traces
+#    → 检查 Trace 树：TOOL span + GENERATION + task-complete
+```
+
+---
+
+### 学习检查清单
+
+完成以上九步后，你应该能回答：
+
+- [ ] `HookContext` 为什么是 `frozen=True`？（防止 handler 互相污染）
+- [ ] `dispatch()` 的异常隔离有什么作用？（Langfuse 崩溃不影响日志输出）
+- [ ] 为什么不能用 `@after_llm_call`？（会干扰 CrewAI 的 function calling 调度）
+- [ ] 两层加载中，全局层和 Workspace 层各负责什么？
+- [ ] Langfuse handler 为什么用 `_pending_spans` dict 追踪 TOOL span？（配对开启/关闭，捕获真实耗时）
+- [ ] 如果要给另一个 Agent 加一个"工具使用统计"hook，需要改哪些文件？（只需在那个 Agent 的 workspace/hooks/ 下加 yaml + py）
+- [ ] 适配层的框架无关性价值是什么？（换框架只需重写适配层，所有 handler 不变）
