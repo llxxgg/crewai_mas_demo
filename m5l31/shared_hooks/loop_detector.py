@@ -17,6 +17,8 @@ class LoopDetector:
     def _check_loop(self, hashes: list[str], state: str, ctx) -> None:
         h = hashlib.md5(state.encode()).hexdigest()[:16]
         hashes.append(h)
+        if len(hashes) > self._threshold * 2:
+            del hashes[:-self._threshold]
 
         if len(hashes) >= self._threshold:
             recent = hashes[-self._threshold:]
@@ -35,7 +37,7 @@ class LoopDetector:
 
     def after_tool_handler(self, ctx):
         """AFTER_TOOL_CALL: 检测工具调用循环（覆盖 native function calling 路径）。"""
-        output = ctx.metadata.get("output", "")[:200]
+        output = ctx.metadata.get("tool_output", ctx.metadata.get("output", ""))[:200]
         state = f"{ctx.tool_name}:{output}"
         self._check_loop(self._tool_hashes, state, ctx)
 

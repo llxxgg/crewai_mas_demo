@@ -1,4 +1,4 @@
-"""T6-T8 + T_extra3: HookLoader 单元测试。"""
+"""T6-T8 + strategies + deps: HookLoader 单元测试。"""
 
 import textwrap
 from pathlib import Path
@@ -87,3 +87,135 @@ def test_missing_module_skipped(tmp_path):
     loader = HookLoader(registry)
     loader.load_from_directory(hooks_dir, layer_name="test")
     assert registry.handler_count(EventType.BEFORE_TURN) == 0
+
+
+# --- strategies 段测试（31课） ---
+
+def test_strategies_basic(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: my_strategy.Counter
+            config:
+              start: 10
+            hooks:
+              AFTER_TURN: on_turn
+    """))
+    (hooks_dir / "my_strategy.py").write_text(textwrap.dedent("""\
+        class Counter:
+            def __init__(self, start=0):
+                self.count = start
+            def on_turn(self, ctx):
+                self.count += 1
+    """))
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    assert registry.handler_count(EventType.AFTER_TURN) == 1
+    assert "my_strategy" in loader.strategies
+    assert loader.strategies["my_strategy"].count == 10
+
+    ctx = HookContext(event_type=EventType.AFTER_TURN, session_id="t")
+    registry.dispatch(EventType.AFTER_TURN, ctx)
+    assert loader.strategies["my_strategy"].count == 11
+
+
+def test_strategies_missing_class_skipped(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: missing_mod.Foo
+            hooks:
+              AFTER_TURN: bar
+    """))
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+    assert registry.handler_count(EventType.AFTER_TURN) == 0
+
+
+# --- deps 段测试（32课） ---
+
+def test_deps_injection(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: logger_mod.Logger
+            config: {}
+            hooks:
+              SESSION_END: on_end
+          - class: gate_mod.Gate
+            config:
+              level: strict
+            deps:
+              logger: logger_mod
+            hooks:
+              BEFORE_TOOL_CALL: check
+    """))
+    (hooks_dir / "logger_mod.py").write_text(textwrap.dedent("""\
+        class Logger:
+            def __init__(self):
+                self.events = []
+            def on_end(self, ctx):
+                self.events.append("end")
+    """))
+    (hooks_dir / "gate_mod.py").write_text(textwrap.dedent("""\
+        class Gate:
+            def __init__(self, level="default", logger=None):
+                self.level = level
+                self.logger = logger
+            def check(self, ctx):
+                if self.logger:
+                    self.logger.events.append("checked")
+    """))
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    assert "logger_mod" in loader.strategies
+    assert "gate_mod" in loader.strategies
+
+    gate = loader.strategies["gate_mod"]
+    logger = loader.strategies["logger_mod"]
+    assert gate.logger is logger
+    assert gate.level == "strict"
+
+    ctx = HookContext(event_type=EventType.BEFORE_TOOL_CALL, tool_name="t", session_id="s")
+    registry.dispatch(EventType.BEFORE_TOOL_CALL, ctx)
+    assert logger.events == ["checked"]
+
+
+def test_deps_missing_ref_skipped(tmp_path):
+    """deps 引用不存在的 strategy → 跳过该 dep，不阻塞实例化。"""
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: gate_mod.Gate
+            config: {}
+            deps:
+              logger: nonexistent_strategy
+            hooks:
+              BEFORE_TOOL_CALL: check
+    """))
+    (hooks_dir / "gate_mod.py").write_text(textwrap.dedent("""\
+        class Gate:
+            def __init__(self, logger=None):
+                self.logger = logger
+            def check(self, ctx):
+                pass
+    """))
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    assert "gate_mod" in loader.strategies
+    assert loader.strategies["gate_mod"].logger is None

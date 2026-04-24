@@ -1,32 +1,55 @@
-"""T23-T24: 安全策略端到端集成测试。"""
+"""T23-T24: 安全策略端到端集成测试——YAML strategies 加载。"""
+
+import os
+from pathlib import Path
 
 import pytest
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext, HookRegistry
-
-from shared_hooks import install_reliability_hooks, install_security_hooks
+from hook_framework.loader import HookLoader
 from shared_hooks.permission_gate import PermissionLevel
+
+_DIR = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    monkeypatch.delenv("SECURITY_POLICY_PATH", raising=False)
+    monkeypatch.delenv("SECURITY_AUDIT_FILE", raising=False)
+    monkeypatch.delenv("COST_GUARD_BUDGET", raising=False)
+
+
+def _load_all(tmp_path, monkeypatch, policy_yaml=None, budget=100.0):
+    audit_file = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("SECURITY_AUDIT_FILE", str(audit_file))
+
+    policy_path = tmp_path / "security.yaml"
+    if policy_yaml:
+        policy_path.write_text(policy_yaml)
+    else:
+        policy_path.write_text(
+            "permissions:\n"
+            "  default: ask\n"
+            "  tools:\n"
+            "    knowledge_search: allow\n"
+            "    shell_executor: deny\n"
+        )
+    monkeypatch.setenv("SECURITY_POLICY_PATH", str(policy_path))
+
+    if budget != 1.0:
+        monkeypatch.setenv("COST_GUARD_BUDGET", str(budget))
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(_DIR / "shared_hooks", layer_name="global")
+    strategies = loader.strategies
+    return registry, strategies, audit_file
 
 
 # T23: 权限拦截端到端
 @pytest.mark.integration
-def test_permission_deny_e2e(tmp_path):
-    yaml_content = """
-permissions:
-  default: ask
-  tools:
-    knowledge_search: allow
-    shell_executor: deny
-"""
-    policy = tmp_path / "security.yaml"
-    policy.write_text(yaml_content)
-
-    r = HookRegistry()
-    sec = install_security_hooks(r, config={
-        "policy_path": str(policy),
-        "audit_file": str(tmp_path / "audit.jsonl"),
-    })
-    install_reliability_hooks(r, config={"budget_usd": 100.0})
+def test_permission_deny_e2e(tmp_path, monkeypatch):
+    registry, strategies, audit_file = _load_all(tmp_path, monkeypatch)
 
     allow_ctx = HookContext(
         event_type=EventType.BEFORE_TOOL_CALL,
@@ -34,7 +57,7 @@ permissions:
         tool_input={"query": "AI安全"},
         session_id="test",
     )
-    r.dispatch_gate(EventType.BEFORE_TOOL_CALL, allow_ctx)
+    registry.dispatch_gate(EventType.BEFORE_TOOL_CALL, allow_ctx)
 
     deny_ctx = HookContext(
         event_type=EventType.BEFORE_TOOL_CALL,
@@ -43,35 +66,21 @@ permissions:
         session_id="test",
     )
     with pytest.raises(GuardrailDeny, match="Permission denied"):
-        r.dispatch_gate(EventType.BEFORE_TOOL_CALL, deny_ctx)
+        registry.dispatch_gate(EventType.BEFORE_TOOL_CALL, deny_ctx)
 
-    m = sec["permission"].get_metrics()
+    m = strategies["permission_gate"].get_metrics()
     assert m["deny_count"] == 1
     assert m["allow_count"] == 1
     assert "shell_executor" in m["denied_tools"]
 
-    audit_lines = (tmp_path / "audit.jsonl").read_text().strip().split("\n")
+    audit_lines = audit_file.read_text().strip().split("\n")
     assert len(audit_lines) >= 1
 
 
 # T24: 安全+可靠性完整链路
 @pytest.mark.integration
-def test_security_plus_reliability_e2e(tmp_path):
-    yaml_content = """
-permissions:
-  default: ask
-  tools:
-    knowledge_search: allow
-"""
-    policy = tmp_path / "security.yaml"
-    policy.write_text(yaml_content)
-
-    r = HookRegistry()
-    sec = install_security_hooks(r, config={
-        "policy_path": str(policy),
-        "audit_file": str(tmp_path / "audit.jsonl"),
-    })
-    rel = install_reliability_hooks(r, config={"budget_usd": 100.0})
+def test_security_plus_reliability_e2e(tmp_path, monkeypatch):
+    registry, strategies, audit_file = _load_all(tmp_path, monkeypatch, budget=100.0)
 
     tool_ctx = HookContext(
         event_type=EventType.BEFORE_TOOL_CALL,
@@ -79,7 +88,7 @@ permissions:
         tool_input={"query": "AI安全"},
         session_id="test",
     )
-    r.dispatch_gate(EventType.BEFORE_TOOL_CALL, tool_ctx)
+    registry.dispatch_gate(EventType.BEFORE_TOOL_CALL, tool_ctx)
 
     turn_ctx = HookContext(
         event_type=EventType.AFTER_TURN,
@@ -89,23 +98,23 @@ permissions:
         session_id="test",
         metadata={"output": "result"},
     )
-    r.dispatch_gate(EventType.AFTER_TURN, turn_ctx)
+    registry.dispatch_gate(EventType.AFTER_TURN, turn_ctx)
 
     end_ctx = HookContext(
         event_type=EventType.SESSION_END,
         session_id="test",
     )
-    r.dispatch(EventType.SESSION_END, end_ctx)
+    registry.dispatch(EventType.SESSION_END, end_ctx)
 
-    sec_m = sec["permission"].get_metrics()
-    assert sec_m["deny_count"] == 0
-    assert sec_m["allow_count"] == 1
+    perm_m = strategies["permission_gate"].get_metrics()
+    assert perm_m["deny_count"] == 0
+    assert perm_m["allow_count"] == 1
 
-    assert sec["sandbox"].get_metrics()["total_violations"] == 0
+    assert strategies["sandbox_guard"].get_metrics()["total_violations"] == 0
 
-    rel_m = rel["cost"].get_metrics()
-    assert rel_m["total_input_tokens"] == 1000
-    assert rel_m["estimated_cost_usd"] > 0
+    cost_m = strategies["cost_guard"].get_metrics()
+    assert cost_m["total_input_tokens"] == 1000
+    assert cost_m["estimated_cost_usd"] > 0
 
-    audit_lines = (tmp_path / "audit.jsonl").read_text().strip().split("\n")
+    audit_lines = audit_file.read_text().strip().split("\n")
     assert any("session_summary" in line for line in audit_lines)

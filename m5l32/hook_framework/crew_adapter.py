@@ -1,6 +1,6 @@
 """F5: CrewAI 机制 → HookRegistry 事件映射。
 
-32课：复用31课 dispatch_gate + pending_deny + success 检测 + token 估算。
+31课升级：dispatch_gate + pending_deny + success 检测 + token 估算。
 30课对齐：prompt_preview / tool_input / tool_output / llm_response 富元数据。
 
 注意：不使用 @after_llm_call —— 注册该 hook 会干扰 CrewAI
@@ -90,8 +90,9 @@ class CrewObservabilityAdapter:
                 last_msg = messages[-1]
                 content = last_msg.get("content", "") if isinstance(last_msg, dict) else str(last_msg)
                 preview = _truncate(str(content), 500)
-                text_len = sum(len(str(m)) for m in messages)
-                self._pending_input_tokens = max(1, text_len * 2 // 3)
+                self._pending_input_tokens = _estimate_tokens(
+                    "".join(str(m) for m in messages)
+                )
             else:
                 self._pending_input_tokens = 0
             self._last_prompt_preview = preview
@@ -119,7 +120,7 @@ class CrewObservabilityAdapter:
                     HookContext(
                         event_type=EventType.BEFORE_TOOL_CALL,
                         tool_name=context.tool_name,
-                        tool_input=dict(context.tool_input),
+                        tool_input=dict(context.tool_input or {}),
                         session_id=sid,
                         turn_number=self._turn_count,
                     ),
@@ -144,7 +145,7 @@ class CrewObservabilityAdapter:
                     HookContext(
                         event_type=EventType.AFTER_TOOL_CALL,
                         tool_name=context.tool_name,
-                        tool_input=dict(context.tool_input),
+                        tool_input=dict(context.tool_input or {}),
                         success=not is_error,
                         session_id=sid,
                         turn_number=self._turn_count,

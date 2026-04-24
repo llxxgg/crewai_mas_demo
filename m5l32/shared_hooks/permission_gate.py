@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from enum import Enum
 from pathlib import Path
@@ -29,7 +30,7 @@ class PermissionLevel(Enum):
 class PermissionGate:
     def __init__(
         self,
-        policy_path: Path | None = None,
+        policy_path: Path | str | None = None,
         default: str = "ask",
         audit: SecurityAuditLogger | None = None,
     ):
@@ -37,6 +38,12 @@ class PermissionGate:
         self._tool_permissions: dict[str, PermissionLevel] = {}
         self._decisions: list[dict] = []
         self._audit = audit
+
+        env_policy = os.environ.get("SECURITY_POLICY_PATH")
+        if env_policy:
+            policy_path = Path(env_policy)
+        elif isinstance(policy_path, str):
+            policy_path = Path(policy_path) if policy_path else None
         if policy_path and policy_path.exists():
             self._load_policy(policy_path)
 
@@ -45,7 +52,7 @@ class PermissionGate:
             config = yaml.safe_load(f)
         permissions = config.get("permissions", {})
         for tool_name, level in permissions.get("tools", {}).items():
-            self._tool_permissions[tool_name] = PermissionLevel(level)
+            self._tool_permissions[tool_name.lower()] = PermissionLevel(level)
         default = permissions.get("default")
         if default:
             self._default = PermissionLevel(default)
@@ -53,7 +60,7 @@ class PermissionGate:
     def before_tool_handler(self, ctx):
         """BEFORE_TOOL_CALL: 检查工具权限。"""
         tool = ctx.tool_name
-        level = self._tool_permissions.get(tool, self._default)
+        level = self._tool_permissions.get(tool.lower(), self._default)
 
         decision = {
             "tool": tool,

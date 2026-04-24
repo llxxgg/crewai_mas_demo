@@ -38,6 +38,8 @@ class SecureToolWrapper:
         original_run = tool._run
         resolved = SecureToolWrapper._resolve_credentials(credentials)
 
+        # Protects credentials from LLM context (tool schema), not from
+        # in-process Python inspection — use secrets manager for defense-in-depth
         def wrapped_run(**kwargs: Any) -> str:
             merged = {**kwargs, **resolved}
             return original_run(**merged)

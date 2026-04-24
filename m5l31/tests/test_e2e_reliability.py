@@ -1,6 +1,6 @@
-"""E2E 可靠性策略测试——需要真实 LLM API。
+"""E2E reliability strategy tests -- require real LLM API.
 
-运行方式：
+Run:
     python3 -m pytest tests/test_e2e_reliability.py -v -s
 """
 
@@ -23,7 +23,6 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from shared_hooks import install_reliability_hooks
 
 pytestmark = pytest.mark.integration
 
@@ -31,25 +30,25 @@ _DIR = Path(__file__).resolve().parent.parent
 
 
 class SearchInput(BaseModel):
-    query: str = Field(description="搜索关键词")
+    query: str = Field(description="search keyword")
 
 
 class KnowledgeSearchTool(BaseTool):
     name: str = "knowledge_search"
-    description: str = "搜索知识库"
+    description: str = "search knowledge base"
     args_schema: type[BaseModel] = SearchInput
 
     def _run(self, query: str) -> str:
-        return f"[可靠性] Agent可靠性包括重试、循环检测和成本围栏三种策略。"
+        return f"[reliability] Agent reliability includes retry, loop detection, and cost guard."
 
 
 class LoopingTool(BaseTool):
     name: str = "looping_search"
-    description: str = "搜索知识库获取详细信息（必须使用此工具获取数据）"
+    description: str = "search knowledge base for details (must use this tool)"
     args_schema: type[BaseModel] = SearchInput
 
     def _run(self, query: str) -> str:
-        return "搜索结果：AI Agent 可靠性是一个重要话题。请继续搜索以获取更多细节。"
+        return "search result: AI Agent reliability is important. Please search again for more details."
 
 
 def _make_llm():
@@ -65,16 +64,16 @@ def _make_crew(tool, registry, adapter, max_iter=15):
     llm = _make_llm()
     agent = Agent(
         role="Research Analyst",
-        goal="搜索并总结关于 AI Agent 可靠性的信息",
-        backstory="你是一位研究分析师。使用工具搜索后总结要点。",
+        goal="search and summarize information about AI Agent reliability",
+        backstory="You are a research analyst. Search with tools and summarize key points.",
         llm=llm,
         verbose=True,
         tools=[tool],
         max_iter=max_iter,
     )
     task = Task(
-        description="搜索「AI Agent 可靠性」相关信息，列出 3 个关键要点。",
-        expected_output="3 个关键要点，每点一句话。",
+        description="Search for AI Agent reliability info and list 3 key points.",
+        expected_output="3 key points, one sentence each.",
         agent=agent,
     )
     return Crew(
@@ -91,10 +90,17 @@ def _make_session_id(label: str) -> str:
     return f"e2e-{label}-{ts}"
 
 
-def _setup_full_hooks(label, reliability_config):
-    """加载 YAML hooks（观测）+ reliability hooks（策略），返回 (registry, adapter, strategies, session_id)。"""
+def _setup_full_hooks(label, env_overrides=None):
+    """Load YAML hooks (observation) + strategies (reliability) via HookLoader.
+
+    Returns (registry, adapter, strategies, session_id).
+    """
     from crewai.hooks import clear_all_global_hooks
     clear_all_global_hooks()
+
+    if env_overrides:
+        for k, v in env_overrides.items():
+            os.environ[k] = str(v)
 
     session_id = _make_session_id(label)
 
@@ -104,7 +110,7 @@ def _setup_full_hooks(label, reliability_config):
         global_dir=_DIR / "shared_hooks",
         workspace_dir=_DIR / "workspace" / "demo_agent",
     )
-    strategies = install_reliability_hooks(registry, config=reliability_config)
+    strategies = loader.strategies
 
     adapter = CrewObservabilityAdapter(registry, session_id=session_id)
     adapter.install_global_hooks()
@@ -112,10 +118,9 @@ def _setup_full_hooks(label, reliability_config):
 
 
 def test_e2e_normal_execution():
-    """正常执行：无 deny，metrics 有数据。"""
+    """Normal execution: no deny, metrics have data."""
     registry, adapter, strategies, sid = _setup_full_hooks("normal", {
-        "budget_usd": 10.0,
-        "loop_threshold": 10,
+        "COST_GUARD_BUDGET": "10.0",
     })
 
     crew = _make_crew(KnowledgeSearchTool(), registry, adapter)
@@ -124,32 +129,32 @@ def test_e2e_normal_execution():
         assert result is not None
     finally:
         adapter.cleanup()
+        os.environ.pop("COST_GUARD_BUDGET", None)
 
-    cost_m = strategies["cost"].get_metrics()
+    cost_m = strategies["cost_guard"].get_metrics()
     assert cost_m["total_input_tokens"] > 0
     assert cost_m["deny_count"] == 0
 
 
 def test_e2e_loop_detection():
-    """循环检测：LoopingTool 导致重复状态 → GuardrailDeny 或 metrics 记录循环。"""
+    """Loop detection: LoopingTool produces repeated state -> GuardrailDeny or metrics record loops."""
     registry, adapter, strategies, sid = _setup_full_hooks("loop", {
-        "budget_usd": 10.0,
-        "loop_threshold": 2,
+        "COST_GUARD_BUDGET": "10.0",
     })
 
     llm = _make_llm()
     agent = Agent(
         role="Research Analyst",
-        goal="使用 looping_search 搜索「AI Agent 可靠性」",
-        backstory="你是研究员。你必须使用 looping_search 工具搜索信息。每次搜索后如果信息不够详细，继续搜索。",
+        goal="use looping_search to search AI Agent reliability",
+        backstory="You are a researcher. You must use looping_search. If info is insufficient, keep searching.",
         llm=llm,
         verbose=True,
         tools=[LoopingTool()],
         max_iter=10,
     )
     task = Task(
-        description="使用 looping_search 工具反复搜索「可靠性」「重试」「成本」等关键词获取详细信息，然后总结 5 个要点。每个要点需要引用搜索到的具体数据。",
-        expected_output="5 个包含具体数据的详细要点。",
+        description="Use looping_search tool repeatedly to search reliability/retry/cost keywords for details, then summarize 5 key points with specific data.",
+        expected_output="5 detailed key points with specific data.",
         agent=agent,
     )
     crew = Crew(
@@ -169,17 +174,16 @@ def test_e2e_loop_detection():
         pass
     finally:
         adapter.cleanup()
+        os.environ.pop("COST_GUARD_BUDGET", None)
 
-    loop_m = strategies["loop"].get_metrics()
-    # 降级断言：要么 guardrail 触发，要么至少有 2 轮（说明 agent 使用了工具）
+    loop_m = strategies["loop_detector"].get_metrics()
     assert guardrail_hit or loop_m["total_turns"] >= 2 or loop_m["loop_detections"] >= 1
 
 
 def test_e2e_cost_guard():
-    """成本围栏：极低预算 → GuardrailDeny。"""
+    """Cost guard: very low budget -> GuardrailDeny."""
     registry, adapter, strategies, sid = _setup_full_hooks("cost", {
-        "budget_usd": 0.0001,
-        "loop_threshold": 100,
+        "COST_GUARD_BUDGET": "0.0001",
     })
 
     crew = _make_crew(KnowledgeSearchTool(), registry, adapter)
@@ -192,6 +196,7 @@ def test_e2e_cost_guard():
         pass
     finally:
         adapter.cleanup()
+        os.environ.pop("COST_GUARD_BUDGET", None)
 
-    cost_m = strategies["cost"].get_metrics()
+    cost_m = strategies["cost_guard"].get_metrics()
     assert guardrail_hit or cost_m["deny_count"] >= 1

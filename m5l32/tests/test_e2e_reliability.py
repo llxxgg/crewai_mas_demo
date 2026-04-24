@@ -22,11 +22,17 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from shared_hooks import install_reliability_hooks
 
 pytestmark = pytest.mark.integration
 
 _DIR = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    monkeypatch.delenv("SECURITY_POLICY_PATH", raising=False)
+    monkeypatch.delenv("SECURITY_AUDIT_FILE", raising=False)
+    monkeypatch.delenv("COST_GUARD_BUDGET", raising=False)
 
 
 class SearchInput(BaseModel):
@@ -60,6 +66,17 @@ def _make_llm():
     return LLM(model=model_name, base_url=base_url)
 
 
+def _load_strategies(tmp_path, monkeypatch, budget=10.0, loop_threshold=3):
+    monkeypatch.setenv("SECURITY_AUDIT_FILE", str(tmp_path / "audit.jsonl"))
+    if budget != 1.0:
+        monkeypatch.setenv("COST_GUARD_BUDGET", str(budget))
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(_DIR / "shared_hooks", layer_name="global")
+    return registry, loader.strategies
+
+
 def _make_crew(tool, registry, adapter, max_iter=15):
     llm = _make_llm()
     agent = Agent(
@@ -85,13 +102,9 @@ def _make_crew(tool, registry, adapter, max_iter=15):
     )
 
 
-def test_e2e_normal_execution():
+def test_e2e_normal_execution(tmp_path, monkeypatch):
     """正常执行：无 deny，metrics 有数据。"""
-    registry = HookRegistry()
-    strategies = install_reliability_hooks(registry, config={
-        "budget_usd": 10.0,
-        "loop_threshold": 10,
-    })
+    registry, strategies = _load_strategies(tmp_path, monkeypatch, budget=10.0)
 
     adapter = CrewObservabilityAdapter(registry, session_id="test_normal")
     adapter.install_global_hooks()
@@ -103,18 +116,14 @@ def test_e2e_normal_execution():
     finally:
         adapter.cleanup()
 
-    cost_m = strategies["cost"].get_metrics()
+    cost_m = strategies["cost_guard"].get_metrics()
     assert cost_m["total_input_tokens"] > 0
     assert cost_m["deny_count"] == 0
 
 
-def test_e2e_loop_detection():
+def test_e2e_loop_detection(tmp_path, monkeypatch):
     """循环检测：LoopingTool 导致重复状态 → GuardrailDeny 或 metrics 记录循环。"""
-    registry = HookRegistry()
-    strategies = install_reliability_hooks(registry, config={
-        "budget_usd": 10.0,
-        "loop_threshold": 2,
-    })
+    registry, strategies = _load_strategies(tmp_path, monkeypatch, budget=10.0, loop_threshold=2)
 
     adapter = CrewObservabilityAdapter(registry, session_id="test_loop")
     adapter.install_global_hooks()
@@ -152,18 +161,13 @@ def test_e2e_loop_detection():
     finally:
         adapter.cleanup()
 
-    loop_m = strategies["loop"].get_metrics()
-    # 降级断言：要么 guardrail 触发，要么至少有 2 轮（说明 agent 使用了工具）
+    loop_m = strategies["loop_detector"].get_metrics()
     assert guardrail_hit or loop_m["total_turns"] >= 2 or loop_m["loop_detections"] >= 1
 
 
-def test_e2e_cost_guard():
+def test_e2e_cost_guard(tmp_path, monkeypatch):
     """成本围栏：极低预算 → GuardrailDeny。"""
-    registry = HookRegistry()
-    strategies = install_reliability_hooks(registry, config={
-        "budget_usd": 0.0001,
-        "loop_threshold": 100,
-    })
+    registry, strategies = _load_strategies(tmp_path, monkeypatch, budget=0.0001)
 
     adapter = CrewObservabilityAdapter(registry, session_id="test_cost")
     adapter.install_global_hooks()
@@ -179,5 +183,5 @@ def test_e2e_cost_guard():
     finally:
         adapter.cleanup()
 
-    cost_m = strategies["cost"].get_metrics()
+    cost_m = strategies["cost_guard"].get_metrics()
     assert guardrail_hit or cost_m["deny_count"] >= 1

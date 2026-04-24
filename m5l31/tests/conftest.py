@@ -1,4 +1,8 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_M5L31_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_M5L31_DIR))
+
+from dotenv import load_dotenv
+load_dotenv(_M5L31_DIR / ".env", override=True)

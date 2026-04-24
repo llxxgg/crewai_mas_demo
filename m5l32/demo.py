@@ -32,8 +32,6 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from shared_hooks import install_reliability_hooks, install_security_hooks
-from shared_hooks.credential_inject import SecureToolWrapper
 
 
 class SearchInput(BaseModel):
@@ -107,7 +105,19 @@ def main():
 
     session_id = f"sess_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
-    # === 1. HookRegistry + YAML hooks（30课） ===
+    # 环境变量覆盖 YAML 默认配置
+    os.environ.setdefault(
+        "SECURITY_POLICY_PATH",
+        str(_DIR / "workspace" / "demo_agent" / "security.yaml"),
+    )
+    os.environ.setdefault(
+        "SECURITY_AUDIT_FILE",
+        str(_DIR / "workspace" / "demo_agent" / "security_audit.jsonl"),
+    )
+    if args.budget != 1.0:
+        os.environ["COST_GUARD_BUDGET"] = str(args.budget)
+
+    # === 1. HookRegistry + YAML 加载（hooks + strategies 一次完成） ===
     registry = HookRegistry()
     loader = HookLoader(registry)
     loader.load_two_layers(
@@ -115,19 +125,7 @@ def main():
         workspace_dir=_DIR / "workspace" / "demo_agent",
     )
 
-    # === 2. 安全策略（32课）—— 先于可靠性 ===
-    security_strategies = install_security_hooks(registry, config={
-        "policy_path": _DIR / "workspace" / "demo_agent" / "security.yaml",
-        "default_permission": "ask",
-        "audit_file": _DIR / "workspace" / "demo_agent" / "security_audit.jsonl",
-    })
-
-    # === 3. 可靠性策略（31课）—— 后于安全 ===
-    reliability_strategies = install_reliability_hooks(registry, config={
-        "max_retries": args.max_retries,
-        "loop_threshold": args.loop_threshold,
-        "budget_usd": args.budget,
-    })
+    strategies = loader.strategies
 
     summary = registry.summary()
     total = sum(len(v) for v in summary.values())
@@ -140,7 +138,7 @@ def main():
             print(f"   {h} -> {event}")
     print()
 
-    # === 4. CrewAI 适配器 ===
+    # === 2. CrewAI 适配器 ===
     adapter = CrewObservabilityAdapter(registry, session_id=session_id)
     adapter.install_global_hooks()
     atexit.register(adapter.cleanup)
@@ -152,7 +150,7 @@ def main():
     )
     llm = LLM(model=model_name, base_url=base_url)
 
-    # === 5. 选择工具（根据攻击场景） ===
+    # === 3. 选择工具（根据攻击场景） ===
     if args.attack == "privilege":
         tool = ShellExecutorTool()
     elif args.attack == "inject":
@@ -189,7 +187,7 @@ def main():
         task_callback=adapter.make_task_callback(),
     )
 
-    # === 6. 执行 ===
+    # === 4. 执行 ===
     print(f"Starting crew...\n")
     try:
         result = crew.kickoff()
@@ -201,22 +199,27 @@ def main():
 
     adapter.cleanup()
 
-    # === 7. 度量 ===
+    # === 5. 度量 ===
+    security_keys = ["audit_logger", "sandbox_guard", "permission_gate"]
+    reliability_keys = ["retry_tracker", "cost_guard", "loop_detector"]
+
     print(f"\n{'='*60}")
     print("Security Metrics:")
-    for name, strategy in security_strategies.items():
-        metrics = strategy.get_metrics()
-        print(f"\n  [{name}]")
-        for k, v in metrics.items():
-            print(f"    {k}: {v}")
+    for key in security_keys:
+        if key in strategies:
+            metrics = strategies[key].get_metrics()
+            print(f"\n  [{key}]")
+            for k, v in metrics.items():
+                print(f"    {k}: {v}")
 
     print(f"\n{'='*60}")
     print("Reliability Metrics:")
-    for name, strategy in reliability_strategies.items():
-        metrics = strategy.get_metrics()
-        print(f"\n  [{name}]")
-        for k, v in metrics.items():
-            print(f"    {k}: {v}")
+    for key in reliability_keys:
+        if key in strategies:
+            metrics = strategies[key].get_metrics()
+            print(f"\n  [{key}]")
+            for k, v in metrics.items():
+                print(f"    {k}: {v}")
 
 
 if __name__ == "__main__":

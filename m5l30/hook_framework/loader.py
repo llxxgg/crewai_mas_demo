@@ -25,7 +25,13 @@ class HookLoader:
             for entry in handler_list:
                 handler_ref = entry["handler"]
                 module_name, func_name = handler_ref.rsplit(".", 1)
-                module_path = hooks_dir / f"{module_name}.py"
+                module_path = (hooks_dir / f"{module_name}.py").resolve()
+                if not module_path.is_relative_to(hooks_dir.resolve()):
+                    print(
+                        f"[HookLoader] path traversal blocked: {handler_ref}",
+                        file=sys.stderr,
+                    )
+                    continue
                 if not module_path.exists():
                     print(
                         f"[HookLoader] module not found: {module_path}",

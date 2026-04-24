@@ -1,4 +1,7 @@
-"""F3-F4: hooks.yaml 解析 + 两层自动加载。"""
+"""F3-F4: hooks.yaml 解析 + 两层自动加载。
+
+31课扩展：strategies 段支持有状态类实例化。
+"""
 
 import importlib.util
 import sys
@@ -12,6 +15,23 @@ from .registry import EventType, HookRegistry
 class HookLoader:
     def __init__(self, registry: HookRegistry):
         self._registry = registry
+        self._strategies: dict[str, object] = {}
+
+    def _load_module(self, hooks_dir: Path, module_name: str, layer_name: str):
+        module_path = (hooks_dir / f"{module_name}.py").resolve()
+        if not module_path.is_relative_to(hooks_dir.resolve()):
+            raise FileNotFoundError(
+                f"path traversal blocked: {module_name}"
+            )
+        if not module_path.exists():
+            raise FileNotFoundError(
+                f"module not found: {module_path}"
+            )
+        fq_name = f"hooks.{layer_name}.{module_name}"
+        spec = importlib.util.spec_from_file_location(fq_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def load_from_directory(self, hooks_dir: Path, layer_name: str = ""):
         yaml_path = hooks_dir / "hooks.yaml"
@@ -25,17 +45,11 @@ class HookLoader:
             for entry in handler_list:
                 handler_ref = entry["handler"]
                 module_name, func_name = handler_ref.rsplit(".", 1)
-                module_path = hooks_dir / f"{module_name}.py"
-                if not module_path.exists():
-                    print(
-                        f"[HookLoader] module not found: {module_path}",
-                        file=sys.stderr,
-                    )
+                try:
+                    module = self._load_module(hooks_dir, module_name, layer_name)
+                except FileNotFoundError as e:
+                    print(f"[HookLoader] {e}", file=sys.stderr)
                     continue
-                fq_name = f"hooks.{layer_name}.{module_name}"
-                spec = importlib.util.spec_from_file_location(fq_name, module_path)
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
                 handler_fn = getattr(module, func_name, None)
                 if handler_fn is None:
                     print(
@@ -46,8 +60,62 @@ class HookLoader:
                 display = f"[{layer_name}] {handler_ref}"
                 self._registry.register(event_type, handler_fn, name=display)
 
+        # strategies 段：有状态类实例化（31课新增）
+        # 顺序敏感：列表顺序 = 注册顺序 = 执行顺序
+        for entry in config.get("strategies", []):
+            class_ref = entry.get("class", "")
+            if not class_ref or "." not in class_ref:
+                print(
+                    f"[HookLoader] invalid strategy class: {class_ref}",
+                    file=sys.stderr,
+                )
+                continue
+
+            module_name, class_name = class_ref.rsplit(".", 1)
+            try:
+                module = self._load_module(hooks_dir, module_name, layer_name)
+            except FileNotFoundError as e:
+                print(f"[HookLoader] strategy {class_ref}: {e}", file=sys.stderr)
+                continue
+
+            cls = getattr(module, class_name, None)
+            if cls is None:
+                print(
+                    f"[HookLoader] class not found: {class_ref}",
+                    file=sys.stderr,
+                )
+                continue
+
+            try:
+                instance = cls(**entry.get("config", {}))
+            except TypeError as e:
+                print(
+                    f"[HookLoader] failed to instantiate {class_ref}: {e}",
+                    file=sys.stderr,
+                )
+                continue
+
+            for event_name, method_name in entry.get("hooks", {}).items():
+                event_type = EventType(event_name.lower())
+                handler = getattr(instance, method_name, None)
+                if handler is None:
+                    print(
+                        f"[HookLoader] method not found: {class_ref}.{method_name}",
+                        file=sys.stderr,
+                    )
+                    continue
+                display = f"[{layer_name}] {class_ref}.{method_name}"
+                self._registry.register(event_type, handler, name=display)
+
+            strategy_key = module_name
+            self._strategies[strategy_key] = instance
+
     def load_two_layers(self, global_dir: Path, workspace_dir: Path):
         self.load_from_directory(global_dir, layer_name="global")
         ws_hooks = workspace_dir / "hooks"
         if ws_hooks.exists():
             self.load_from_directory(ws_hooks, layer_name="workspace")
+
+    @property
+    def strategies(self) -> dict[str, object]:
+        return dict(self._strategies)

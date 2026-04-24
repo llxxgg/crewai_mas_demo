@@ -104,7 +104,7 @@ class CrewObservabilityAdapter:
                 HookContext(
                     event_type=EventType.BEFORE_TOOL_CALL,
                     tool_name=context.tool_name,
-                    tool_input=dict(context.tool_input),
+                    tool_input=dict(context.tool_input or {}),
                     session_id=sid,
                     turn_number=self._turn_count,
                 ),
@@ -121,7 +121,7 @@ class CrewObservabilityAdapter:
                 HookContext(
                     event_type=EventType.AFTER_TOOL_CALL,
                     tool_name=context.tool_name,
-                    tool_input=dict(context.tool_input),
+                    tool_input=dict(context.tool_input or {}),
                     session_id=sid,
                     turn_number=self._turn_count,
                     metadata={"tool_output": tool_result},

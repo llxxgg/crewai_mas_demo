@@ -1,29 +1,46 @@
-"""31课 Demo：观测 + 可靠性三策略。
+"""31课 Demo：观测 + 可靠性三策略（在 30 课完整 Agent 基础上增量升级）。
+
+演示架构（复用 25 课框架 + 30 课 Hook 骨架 + 31 课可靠性策略）：
+  - build_bootstrap_prompt()：加载 workspace 四件套（soul / user / agent / memory）
+  - SkillLoaderTool：渐进式披露，task 型 Skill 启动 Sub-Crew 在沙盒中执行
+  - Hook 框架（两层加载）+ Langfuse 全链路追踪
+  - 31课新增：hooks.yaml strategies 段自动加载可靠性策略
+    - RetryTracker：重试追踪（纯观测）
+    - CostGuard：成本围栏（超预算 deny）
+    - LoopDetector：循环检测（重复状态 deny）
+
+前置条件：
+    docker compose -f sandbox-docker-compose.yaml up -d
 
 运行方式：
-    python3 demo.py                    # 正常运行
-    python3 demo.py --budget 0.001     # 低预算，触发成本围栏
-    python3 demo.py --loop             # 使用会循环的工具，触发循环检测
+    python3 demo.py
+    python3 demo.py "为一个短链接服务产出技术设计文档"
+
+    # 低预算模式（触发成本围栏）
+    COST_GUARD_BUDGET=0.001 python3 demo.py
 """
 
 from __future__ import annotations
 
-import argparse
 import atexit
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(_DIR))
+_M5L31_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _M5L31_DIR.parent
+for _p in [str(_M5L31_DIR), str(_PROJECT_ROOT)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from dotenv import load_dotenv
-load_dotenv(_DIR / ".env", override=True)
+load_dotenv(_M5L31_DIR / ".env", override=True)
 
 from crewai import Agent, Crew, LLM, Task
-from crewai.tools import BaseTool
-from pydantic import BaseModel, Field
+
+from m3l20.m3l20_file_memory import build_bootstrap_prompt
+from tools.skill_loader_tool import SkillLoaderTool
 
 from hook_framework import (
     CrewObservabilityAdapter,
@@ -31,81 +48,60 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from shared_hooks import install_reliability_hooks
 
+WORKSPACE_DIR = _M5L31_DIR / "workspace" / "demo_agent"
+SKILLS_DIR = WORKSPACE_DIR / "skills"
+OUTPUT_DIR = WORKSPACE_DIR / "output"
 
-class SearchInput(BaseModel):
-    query: str = Field(description="搜索关键词")
+SANDBOX_MCP_URL = "http://localhost:8030/mcp"
+SANDBOX_MOUNT_DESC = (
+    "1. 所有操作必须在沙盒中执行，不得操作本地文件系统。\n"
+    "   已挂载目录：\n"
+    "   - skills → /mnt/skills:ro（Skill 资源，只读）\n"
+    "   - output → /workspace/output:rw（产出物，可读写）\n\n"
+    "2. 产出文件必须写到 /workspace/output/ 目录下\n"
+    "3. 如遇依赖缺失，先在沙盒中安装再继续"
+)
 
-
-class KnowledgeSearchTool(BaseTool):
-    name: str = "knowledge_search"
-    description: str = "搜索知识库，返回关于指定主题的信息"
-    args_schema: type[BaseModel] = SearchInput
-
-    def _run(self, query: str) -> str:
-        knowledge = {
-            "可靠性": "可靠性策略包括重试、循环检测和成本围栏。重试用指数退避+Jitter，Agent场景最多2-3次。",
-            "重试": "指数退避+Jitter是标准退避策略。Agent场景下重试次数应控制在2-3次，避免无效消耗。",
-            "成本": "Agent成本不可预测，需要实时算账。Token估算+价格表=实时围栏，精确数据走Langfuse。",
-            "循环": "Agent可能陷入工具调用循环。状态哈希去重可检测连续重复，及时终止避免浪费。",
-            "AI Agent": "AI Agent是能自主感知环境、做出决策并采取行动的智能系统。可靠性是生产部署的关键挑战。",
-        }
-        results = []
-        for key, val in knowledge.items():
-            if key.lower() in query.lower() or query.lower() in key.lower():
-                results.append(f"[{key}] {val}")
-        if not results:
-            for key, val in list(knowledge.items())[:2]:
-                results.append(f"[{key}] {val}")
-        return "\n\n".join(results)
-
-
-class LoopingTool(BaseTool):
-    name: str = "looping_search"
-    description: str = "搜索（总是返回相同结果）"
-    args_schema: type[BaseModel] = SearchInput
-
-    def _run(self, query: str) -> str:
-        return "搜索结果：AI Agent 可靠性是一个重要话题。"
+DEFAULT_TASK = "为一个用户注册功能产出技术设计文档"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="31课 Demo")
-    parser.add_argument("--budget", type=float, default=1.0)
-    parser.add_argument("--loop", action="store_true")
-    parser.add_argument("--max-retries", type=int, default=3)
-    parser.add_argument("--loop-threshold", type=int, default=3)
-    args = parser.parse_args()
-
+    task_desc = " ".join(sys.argv[1:]).strip() or DEFAULT_TASK
     session_id = f"sess_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
+    # ── 1. Hook 框架初始化（观测 + 可靠性策略，全部 YAML 声明式加载）─────
     registry = HookRegistry()
     loader = HookLoader(registry)
     loader.load_two_layers(
-        global_dir=_DIR / "shared_hooks",
-        workspace_dir=_DIR / "workspace" / "demo_agent",
+        global_dir=_M5L31_DIR / "shared_hooks",
+        workspace_dir=WORKSPACE_DIR,
     )
-
-    strategies = install_reliability_hooks(registry, config={
-        "max_retries": args.max_retries,
-        "loop_threshold": args.loop_threshold,
-        "budget_usd": args.budget,
-    })
 
     summary = registry.summary()
     total = sum(len(v) for v in summary.values())
     print(f"Session: {session_id}")
-    print(f"Budget: ${args.budget:.2f}")
-    print(f"Hooks: {total} handlers")
+    print(f"HookRegistry: {total} handlers loaded")
     for event, handlers in summary.items():
         for h in handlers:
             print(f"   {h} -> {event}")
+    if loader.strategies:
+        print(f"Strategies: {list(loader.strategies.keys())}")
     print()
 
+    # ── 2. CrewAI 适配层 ───────────────────────────────────────────────────
     adapter = CrewObservabilityAdapter(registry, session_id=session_id)
     adapter.install_global_hooks()
     atexit.register(adapter.cleanup)
+
+    # ── 3. Bootstrap + SkillLoader ─────────────────────────────────────────
+    backstory = build_bootstrap_prompt(WORKSPACE_DIR)
+
+    skill_tool = SkillLoaderTool(
+        skills_dir=str(SKILLS_DIR),
+        sandbox_mcp_url=SANDBOX_MCP_URL,
+        sandbox_mount_desc=SANDBOX_MOUNT_DESC,
+    )
 
     model_name = os.environ.get("AGENT_MODEL", "qwen-plus")
     base_url = os.environ.get(
@@ -114,20 +110,22 @@ def main():
     )
     llm = LLM(model=model_name, base_url=base_url)
 
-    tool = LoopingTool() if args.loop else KnowledgeSearchTool()
     agent = Agent(
-        role="Research Analyst",
-        goal="搜索并总结关于 AI Agent 可靠性的信息",
-        backstory="你是一位研究分析师。使用工具搜索后总结要点。",
+        role="数字员工",
+        goal="根据用户请求，调用合适的 Skill 高效完成任务",
+        backstory=backstory,
         llm=llm,
         verbose=True,
-        tools=[tool],
-        max_iter=15,
+        tools=[skill_tool],
     )
 
     task = Task(
-        description="搜索「AI Agent 可靠性」相关信息，列出 3 个关键要点。",
-        expected_output="3 个关键要点，每点一句话。",
+        description=(
+            f"用户请求：{task_desc}\n\n"
+            "请先调用 skill_loader 工具加载合适的 Skill 获取工作指引，"
+            "然后严格按照指引完成任务。"
+        ),
+        expected_output="按照 Skill 指引产出的完整交付物",
         agent=agent,
     )
 
@@ -139,7 +137,11 @@ def main():
         task_callback=adapter.make_task_callback(),
     )
 
-    print(f"Starting crew...\n")
+    # ── 4. 执行 ────────────────────────────────────────────────────────────
+    print(f"Task: {task_desc}\n")
+    print(f"Bootstrap: {len(backstory)} chars from workspace/demo_agent/")
+    print(f"Skills: {list(skill_tool._skill_registry.keys())}\n")
+
     try:
         result = crew.kickoff()
         print(f"\n{'='*60}")
@@ -148,15 +150,27 @@ def main():
         print(f"\n{'='*60}")
         print(f"Guardrail triggered: {e}")
 
+    # ── 5. 清理 + 度量 ────────────────────────────────────────────────────
     adapter.cleanup()
 
     print(f"\n{'='*60}")
-    print("Guardrail Metrics:")
-    for name, strategy in strategies.items():
-        metrics = strategy.get_metrics()
-        print(f"\n  [{name}]")
-        for k, v in metrics.items():
-            print(f"    {k}: {v}")
+    print(f"Langfuse: http://localhost:3000")
+    design_doc = OUTPUT_DIR / "design_doc.md"
+    if design_doc.exists():
+        print(f"Design doc: {design_doc}")
+    audit_file = WORKSPACE_DIR / "audit.log"
+    if audit_file.exists():
+        print(f"Audit log: {audit_file}")
+
+    if loader.strategies:
+        print(f"\n{'='*60}")
+        print("Guardrail Metrics:")
+        for name, strategy in loader.strategies.items():
+            if hasattr(strategy, "get_metrics"):
+                metrics = strategy.get_metrics()
+                print(f"\n  [{name}]")
+                for k, v in metrics.items():
+                    print(f"    {k}: {v}")
 
 
 if __name__ == "__main__":

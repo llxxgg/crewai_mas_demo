@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import unquote
 from typing import TYPE_CHECKING
 
 from hook_framework.registry import GuardrailDeny
@@ -20,11 +21,11 @@ if TYPE_CHECKING:
 _PATH_TRAVERSAL = re.compile(r"\.\.[/\\]")
 _ENV_VAR_REF = re.compile(r"\$\{?\w+\}?")
 _DANGEROUS_COMMANDS = re.compile(
-    r"\b(rm\s+-rf|sudo|chmod\s+777|curl\s.*\|.*sh|wget\s.*\|.*sh|eval|exec)\b",
+    r"\b(rm\s+-rf|sudo|chmod\s+777|curl\s.*\|.*sh|wget\s.*\|.*sh|eval|exec|dd\s+if=|mkfs|shred)\b",
     re.IGNORECASE,
 )
 # 不含 () 和 $：括号在自然语言常见，$ 由 _ENV_VAR_REF 单独处理
-_SHELL_INJECTION = re.compile(r"[;&|`]")
+_SHELL_INJECTION = re.compile(r"[;&|`]|\$\(")
 
 
 class SandboxGuard:
@@ -39,7 +40,8 @@ class SandboxGuard:
 
     def before_tool_handler(self, ctx):
         """BEFORE_TOOL_CALL: 对工具输入做安全消毒。"""
-        tool_input = str(ctx.tool_input) if ctx.tool_input else ""
+        raw = str(ctx.tool_input) if ctx.tool_input is not None else ""
+        tool_input = unquote(raw)
 
         if _PATH_TRAVERSAL.search(tool_input):
             self._record_violation(ctx, "path_traversal", tool_input)

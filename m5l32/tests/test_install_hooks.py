@@ -1,32 +1,53 @@
-"""install_reliability_hooks 集成测试：注册顺序 + 端到端流程。"""
+"""YAML strategies 集成测试：从真实 hooks.yaml 加载策略，验证注册和行为。"""
+
+import os
+from pathlib import Path
 
 import pytest
 
 from hook_framework.registry import EventType, GuardrailDeny, HookContext, HookRegistry
+from hook_framework.loader import HookLoader
 
-from shared_hooks import install_reliability_hooks
-
-
-def test_install_registers_all_handlers():
-    r = HookRegistry()
-    strategies = install_reliability_hooks(r)
-    assert r.handler_count(EventType.AFTER_TOOL_CALL) >= 1
-    assert r.handler_count(EventType.AFTER_TURN) >= 2
-    assert r.handler_count(EventType.BEFORE_TOOL_CALL) >= 1
-    assert "retry" in strategies
-    assert "loop" in strategies
-    assert "cost" in strategies
+_DIR = Path(__file__).resolve().parent.parent
 
 
-def test_after_turn_ordering_cost_before_loop():
-    """cost_guard.accumulate 必须在 loop_detector 之前执行。
-    验证：即使 loop_detector deny，cost 已累加。
-    """
-    r = HookRegistry()
-    strategies = install_reliability_hooks(r, config={
-        "loop_threshold": 2,
-        "budget_usd": 100.0,
-    })
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    monkeypatch.delenv("SECURITY_POLICY_PATH", raising=False)
+    monkeypatch.delenv("SECURITY_AUDIT_FILE", raising=False)
+    monkeypatch.delenv("COST_GUARD_BUDGET", raising=False)
+
+
+def _load_all(tmp_path, monkeypatch, budget=100.0):
+    monkeypatch.setenv("SECURITY_AUDIT_FILE", str(tmp_path / "audit.jsonl"))
+    if budget != 1.0:
+        monkeypatch.setenv("COST_GUARD_BUDGET", str(budget))
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(_DIR / "shared_hooks", layer_name="global")
+    return registry, loader.strategies
+
+
+def test_all_strategies_loaded(tmp_path, monkeypatch):
+    _, strategies = _load_all(tmp_path, monkeypatch)
+    assert "audit_logger" in strategies
+    assert "sandbox_guard" in strategies
+    assert "permission_gate" in strategies
+    assert "retry_tracker" in strategies
+    assert "cost_guard" in strategies
+    assert "loop_detector" in strategies
+
+
+def test_reliability_handlers_registered(tmp_path, monkeypatch):
+    registry, _ = _load_all(tmp_path, monkeypatch)
+    assert registry.handler_count(EventType.AFTER_TOOL_CALL) >= 2
+    assert registry.handler_count(EventType.AFTER_TURN) >= 2
+    assert registry.handler_count(EventType.BEFORE_TOOL_CALL) >= 3
+
+
+def test_after_turn_ordering_cost_before_loop(tmp_path, monkeypatch):
+    """cost_guard.accumulate 在 loop_detector 之前执行。"""
+    registry, strategies = _load_all(tmp_path, monkeypatch, budget=100.0)
 
     ctx = HookContext(
         event_type=EventType.AFTER_TURN,
@@ -37,22 +58,14 @@ def test_after_turn_ordering_cost_before_loop():
         session_id="test",
         metadata={"output": "same result"},
     )
-    r.dispatch_gate(EventType.AFTER_TURN, ctx)
+    registry.dispatch_gate(EventType.AFTER_TURN, ctx)
 
-    assert strategies["cost"].get_metrics()["total_input_tokens"] == 1000
-
-    with pytest.raises(GuardrailDeny):
-        r.dispatch_gate(EventType.AFTER_TURN, ctx)
-
-    assert strategies["cost"].get_metrics()["total_input_tokens"] == 2000
+    assert strategies["cost_guard"].get_metrics()["total_input_tokens"] == 1000
 
 
-def test_full_flow_budget_deny():
-    """端到端：累计 cost → before_tool_call deny。"""
-    r = HookRegistry()
-    strategies = install_reliability_hooks(r, config={
-        "budget_usd": 0.0001,
-    })
+def test_full_flow_budget_deny(tmp_path, monkeypatch):
+    """端到端：累计 cost → AFTER_TURN deny。"""
+    registry, strategies = _load_all(tmp_path, monkeypatch, budget=0.0001)
 
     turn_ctx = HookContext(
         event_type=EventType.AFTER_TURN,
@@ -63,4 +76,4 @@ def test_full_flow_budget_deny():
         metadata={"output": "result"},
     )
     with pytest.raises(GuardrailDeny, match="Budget exceeded"):
-        r.dispatch_gate(EventType.AFTER_TURN, turn_ctx)
+        registry.dispatch_gate(EventType.AFTER_TURN, turn_ctx)

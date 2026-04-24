@@ -4,6 +4,7 @@
 """
 
 import sys
+import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -63,7 +64,8 @@ class HookRegistry:
                 handler(context)
             except Exception as e:
                 print(
-                    f"[HookRegistry] {event_type.value} handler error: {e}",
+                    f"[HookRegistry] {event_type.value} handler error: {e}\n"
+                    f"{traceback.format_exc()}",
                     file=sys.stderr,
                 )
 
@@ -76,7 +78,8 @@ class HookRegistry:
                 raise
             except Exception as e:
                 print(
-                    f"[HookRegistry] {event_type.value} handler error: {e}",
+                    f"[HookRegistry] {event_type.value} handler error: {e}\n"
+                    f"{traceback.format_exc()}",
                     file=sys.stderr,
                 )
 

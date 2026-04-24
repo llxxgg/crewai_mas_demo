@@ -17,7 +17,11 @@ MODEL_PRICES = {
 
 class CostGuard:
     def __init__(self, budget_usd: float = 1.0, model: str = ""):
-        self._budget = budget_usd
+        env_budget = os.environ.get("COST_GUARD_BUDGET")
+        resolved_budget = float(env_budget) if env_budget else budget_usd
+        if resolved_budget < 0:
+            raise ValueError(f"budget_usd must be non-negative, got {resolved_budget}")
+        self._budget = resolved_budget
         self._model = model or os.environ.get("AGENT_MODEL", "qwen-plus")
         self._total_input_tokens = 0
         self._total_output_tokens = 0

@@ -32,7 +32,9 @@ def _ensure_client():
 
 
 def _set_trace_attrs(span):
-    otel = span._otel_span
+    otel = getattr(span, "_otel_span", None)
+    if otel is None:
+        return
     otel.set_attribute("langfuse.trace.name", _trace_name)
     otel.set_attribute("session.id", _session_id)
     otel.set_attribute("langfuse.trace.metadata", '{"source":"m5l30-hook-framework"}')

@@ -87,3 +87,157 @@ def test_missing_module_skipped(tmp_path):
     loader = HookLoader(registry)
     loader.load_from_directory(hooks_dir, layer_name="test")
     assert registry.handler_count(EventType.BEFORE_TURN) == 0
+
+
+# ── 31课新增：strategies 段测试 ──────────────────────────────────
+
+_STRATEGY_CLASS = textwrap.dedent("""\
+    class MyStrategy:
+        def __init__(self, threshold=5):
+            self.threshold = threshold
+            self.calls = []
+
+        def on_turn(self, ctx):
+            self.calls.append(("turn", ctx))
+
+        def on_tool(self, ctx):
+            self.calls.append(("tool", ctx))
+
+        def get_metrics(self):
+            return {"threshold": self.threshold, "call_count": len(self.calls)}
+""")
+
+
+def test_strategy_class_instantiation(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: my_strategy.MyStrategy
+            config:
+              threshold: 10
+            hooks:
+              AFTER_TURN: on_turn
+    """))
+    (hooks_dir / "my_strategy.py").write_text(_STRATEGY_CLASS)
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    assert registry.handler_count(EventType.AFTER_TURN) == 1
+    assert "my_strategy" in loader.strategies
+    assert loader.strategies["my_strategy"].threshold == 10
+
+
+def test_strategy_multiple_events(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: my_strategy.MyStrategy
+            config:
+              threshold: 3
+            hooks:
+              AFTER_TURN: on_turn
+              AFTER_TOOL_CALL: on_tool
+    """))
+    (hooks_dir / "my_strategy.py").write_text(_STRATEGY_CLASS)
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    assert registry.handler_count(EventType.AFTER_TURN) == 1
+    assert registry.handler_count(EventType.AFTER_TOOL_CALL) == 1
+
+    ctx = HookContext(event_type=EventType.AFTER_TURN, session_id="t")
+    registry.dispatch(EventType.AFTER_TURN, ctx)
+
+    instance = loader.strategies["my_strategy"]
+    assert len(instance.calls) == 1
+    assert instance.calls[0][0] == "turn"
+
+
+def test_strategy_shared_instance(tmp_path):
+    """Same class instance is shared across all its registered events."""
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: my_strategy.MyStrategy
+            config:
+              threshold: 1
+            hooks:
+              AFTER_TURN: on_turn
+              AFTER_TOOL_CALL: on_tool
+    """))
+    (hooks_dir / "my_strategy.py").write_text(_STRATEGY_CLASS)
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    registry.dispatch(EventType.AFTER_TURN, HookContext(event_type=EventType.AFTER_TURN))
+    registry.dispatch(EventType.AFTER_TOOL_CALL, HookContext(event_type=EventType.AFTER_TOOL_CALL))
+
+    instance = loader.strategies["my_strategy"]
+    assert len(instance.calls) == 2
+
+
+def test_strategy_bad_class_ref_skipped(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: nonexistent_module.BadClass
+            hooks:
+              AFTER_TURN: handler
+    """))
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    assert registry.handler_count(EventType.AFTER_TURN) == 0
+    assert len(loader.strategies) == 0
+
+
+def test_strategy_bad_method_skipped(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: my_strategy.MyStrategy
+            hooks:
+              AFTER_TURN: nonexistent_method
+    """))
+    (hooks_dir / "my_strategy.py").write_text(_STRATEGY_CLASS)
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    assert registry.handler_count(EventType.AFTER_TURN) == 0
+    assert "my_strategy" in loader.strategies
+
+
+def test_strategies_property_returns_copy(tmp_path):
+    hooks_dir = tmp_path / "hooks_dir"
+    hooks_dir.mkdir()
+    (hooks_dir / "hooks.yaml").write_text(textwrap.dedent("""\
+        strategies:
+          - class: my_strategy.MyStrategy
+            hooks:
+              AFTER_TURN: on_turn
+    """))
+    (hooks_dir / "my_strategy.py").write_text(_STRATEGY_CLASS)
+
+    registry = HookRegistry()
+    loader = HookLoader(registry)
+    loader.load_from_directory(hooks_dir, layer_name="test")
+
+    s1 = loader.strategies
+    s2 = loader.strategies
+    assert s1 is not s2
+    assert s1.keys() == s2.keys()

@@ -29,12 +29,18 @@ from hook_framework import (
     HookLoader,
     HookRegistry,
 )
-from shared_hooks import install_reliability_hooks, install_security_hooks
 from shared_hooks.credential_inject import SecureToolWrapper
 
 pytestmark = pytest.mark.integration
 
 _DIR = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    monkeypatch.delenv("SECURITY_POLICY_PATH", raising=False)
+    monkeypatch.delenv("SECURITY_AUDIT_FILE", raising=False)
+    monkeypatch.delenv("COST_GUARD_BUDGET", raising=False)
 
 
 class SearchInput(BaseModel):
@@ -81,8 +87,8 @@ def _make_llm():
     return LLM(model=model_name, base_url=base_url)
 
 
-def _setup_full_stack(tmp_path, policy_yaml=None, budget=10.0):
-    """搭建三层叠加：观测 + 安全 + 可靠性。"""
+def _setup_full_stack(tmp_path, monkeypatch, policy_yaml=None, budget=10.0):
+    """搭建三层叠加：观测 + 安全 + 可靠性（全 YAML 加载）。"""
     policy_path = tmp_path / "security.yaml"
     if policy_yaml:
         policy_path.write_text(policy_yaml)
@@ -99,6 +105,11 @@ def _setup_full_stack(tmp_path, policy_yaml=None, budget=10.0):
 
     audit_file = tmp_path / "security_audit.jsonl"
 
+    monkeypatch.setenv("SECURITY_POLICY_PATH", str(policy_path))
+    monkeypatch.setenv("SECURITY_AUDIT_FILE", str(audit_file))
+    if budget != 1.0:
+        monkeypatch.setenv("COST_GUARD_BUDGET", str(budget))
+
     registry = HookRegistry()
     loader = HookLoader(registry)
     loader.load_two_layers(
@@ -106,30 +117,26 @@ def _setup_full_stack(tmp_path, policy_yaml=None, budget=10.0):
         workspace_dir=_DIR / "workspace" / "demo_agent",
     )
 
-    sec = install_security_hooks(registry, config={
-        "policy_path": str(policy_path),
-        "audit_file": str(audit_file),
-    })
-    rel = install_reliability_hooks(registry, config={
-        "budget_usd": budget,
-        "loop_threshold": 10,
-    })
+    strategies = loader.strategies
+    sec = {
+        "permission": strategies["permission_gate"],
+        "sandbox": strategies["sandbox_guard"],
+        "audit": strategies["audit_logger"],
+    }
+    rel = {
+        "retry": strategies["retry_tracker"],
+        "loop": strategies["loop_detector"],
+        "cost": strategies["cost_guard"],
+    }
 
     return registry, sec, rel, audit_file
 
 
-# ── S1: 正常执行——三层叠加全部工作 ──────────────────────────────
+# -- S1: 正常执行——三层叠加全部工作 --
 
-def test_s1_normal_execution_three_layers(tmp_path):
-    """Agent 使用 knowledge_search（allow），三层叠加正常工作。
-
-    验证：
-    - Agent 完成任务，有结果
-    - permission 全部 allow，sandbox 零 violation
-    - cost 有累计（LLM 真正被调用了）
-    - 审计文件有 session_summary
-    """
-    registry, sec, rel, audit_file = _setup_full_stack(tmp_path)
+def test_s1_normal_execution_three_layers(tmp_path, monkeypatch):
+    """Agent 使用 knowledge_search（allow），三层叠加正常工作。"""
+    registry, sec, rel, audit_file = _setup_full_stack(tmp_path, monkeypatch)
 
     adapter = CrewObservabilityAdapter(registry, session_id="s1_normal")
     adapter.install_global_hooks()
@@ -163,7 +170,6 @@ def test_s1_normal_execution_three_layers(tmp_path):
     finally:
         adapter.cleanup()
 
-    # 安全度量
     perm_m = sec["permission"].get_metrics()
     assert perm_m["deny_count"] == 0
     assert perm_m["allow_count"] >= 1
@@ -171,33 +177,23 @@ def test_s1_normal_execution_three_layers(tmp_path):
     sandbox_m = sec["sandbox"].get_metrics()
     assert sandbox_m["total_violations"] == 0
 
-    # 可靠性度量
     cost_m = rel["cost"].get_metrics()
     assert cost_m["total_input_tokens"] > 0
     assert cost_m["deny_count"] == 0
 
-    # 审计文件
     assert audit_file.exists()
     audit_lines = audit_file.read_text().strip().split("\n")
     assert any("session_summary" in line for line in audit_lines)
 
-    print(f"\n✅ S1: 正常执行成功")
-    print(f"   permission: {perm_m['allow_count']} allow, 0 deny")
-    print(f"   sandbox: 0 violations")
+    print(f"\nS1: permission: {perm_m['allow_count']} allow, 0 deny")
     print(f"   cost: ${cost_m['estimated_cost_usd']:.6f}")
 
 
-# ── S2: 权限越权——shell_executor 被 DENY ────────────────────────
+# -- S2: 权限越权——shell_executor 被 DENY --
 
-def test_s2_permission_deny_privilege_escalation(tmp_path):
-    """Agent 拿到 shell_executor 工具但被 security.yaml DENY。
-
-    验证：
-    - permission_gate 触发 GuardrailDeny
-    - shell_executor 的 _run() 从未执行（无 SECURITY BREACH 输出）
-    - 审计文件记录 permission_deny 事件
-    """
-    registry, sec, rel, audit_file = _setup_full_stack(tmp_path)
+def test_s2_permission_deny_privilege_escalation(tmp_path, monkeypatch):
+    """Agent 拿到 shell_executor 工具但被 security.yaml DENY。"""
+    registry, sec, rel, audit_file = _setup_full_stack(tmp_path, monkeypatch)
 
     adapter = CrewObservabilityAdapter(registry, session_id="s2_privilege")
     adapter.install_global_hooks()
@@ -247,21 +243,14 @@ def test_s2_permission_deny_privilege_escalation(tmp_path):
         audit_text = audit_file.read_text()
         assert "permission_deny" in audit_text
 
-    print(f"\n✅ S2: 权限越权被拦截")
-    print(f"   guardrail_hit: {guardrail_hit}")
-    print(f"   deny_count: {perm_m['deny_count']}")
+    print(f"\nS2: guardrail_hit={guardrail_hit}, deny_count={perm_m['deny_count']}")
 
 
-# ── S3: 注入攻击——路径遍历被 sandbox_guard 拦截 ──────────────────
+# -- S3: 注入攻击——路径遍历被 sandbox_guard 拦截 --
 
-def test_s3_injection_path_traversal(tmp_path):
-    """Task 包含 ../../etc/passwd，LLM 将其传给工具，sandbox_guard 拦截。
-
-    验证：
-    - sandbox_guard 检测到路径遍历
-    - 触发 GuardrailDeny 或 sandbox violations >= 1
-    """
-    registry, sec, rel, audit_file = _setup_full_stack(tmp_path)
+def test_s3_injection_path_traversal(tmp_path, monkeypatch):
+    """Task 包含 ../../etc/passwd，sandbox_guard 拦截。"""
+    registry, sec, rel, audit_file = _setup_full_stack(tmp_path, monkeypatch)
 
     adapter = CrewObservabilityAdapter(registry, session_id="s3_inject")
     adapter.install_global_hooks()
@@ -304,30 +293,21 @@ def test_s3_injection_path_traversal(tmp_path):
         adapter.cleanup()
 
     sandbox_m = sec["sandbox"].get_metrics()
-    # LLM 可能不会完全照搬路径，所以用降级断言
     assert guardrail_hit or sandbox_m["total_violations"] >= 1, (
         f"Expected path traversal to be caught. "
         f"guardrail_hit={guardrail_hit}, violations={sandbox_m}"
     )
 
-    print(f"\n✅ S3: 注入攻击被拦截")
-    print(f"   guardrail_hit: {guardrail_hit}")
-    print(f"   sandbox violations: {sandbox_m['total_violations']}")
+    print(f"\nS3: guardrail_hit={guardrail_hit}, violations={sandbox_m['total_violations']}")
 
 
-# ── S4: 密钥隔离——SecureToolWrapper 注入 API Key ──────────────────
+# -- S4: 密钥隔离——SecureToolWrapper 注入 API Key --
 
 def test_s4_credential_injection(tmp_path, monkeypatch):
-    """SecureToolWrapper 注入 API Key，LLM 上下文不可见。
-
-    验证：
-    - 工具执行时拿到密钥（返回值包含密钥预览）
-    - 工具名和描述不含密钥
-    - Agent 正常完成任务
-    """
+    """SecureToolWrapper 注入 API Key，LLM 上下文不可见。"""
     monkeypatch.setenv("DEMO_API_KEY", "sk-demo-secret-key-12345678")
 
-    registry, sec, rel, audit_file = _setup_full_stack(tmp_path)
+    registry, sec, rel, audit_file = _setup_full_stack(tmp_path, monkeypatch)
 
     adapter = CrewObservabilityAdapter(registry, session_id="s4_cred")
     adapter.install_global_hooks()
@@ -367,28 +347,21 @@ def test_s4_credential_injection(tmp_path, monkeypatch):
         result = crew.kickoff()
         result_str = str(result)
         assert result is not None
-        # 密钥不应出现在最终结果中（工具返回的是预览格式）
         assert "sk-demo-secret-key-12345678" not in result_str
     finally:
         adapter.cleanup()
 
     perm_m = sec["permission"].get_metrics()
-    # secure_api 是 allow，应该通过
     assert perm_m["deny_count"] == 0
 
-    print(f"\n✅ S4: 密钥隔离成功")
-    print(f"   工具描述不含密钥: True")
-    print(f"   Agent 完成任务: True")
+    print(f"\nS4: credential isolation verified")
 
 
-# ── S5: 三层叠加 + 预算限制 ───────────────────────────────────
+# -- S5: 三层叠加 + 预算限制 --
 
-def test_s5_three_layers_with_budget(tmp_path):
-    """安全检查通过后，成本围栏仍然生效。
-
-    验证：注册顺序决定执行顺序——安全先于成本。
-    """
-    registry, sec, rel, audit_file = _setup_full_stack(tmp_path, budget=0.0001)
+def test_s5_three_layers_with_budget(tmp_path, monkeypatch):
+    """安全检查通过后，成本围栏仍然生效。"""
+    registry, sec, rel, audit_file = _setup_full_stack(tmp_path, monkeypatch, budget=0.0001)
 
     adapter = CrewObservabilityAdapter(registry, session_id="s5_budget")
     adapter.install_global_hooks()
@@ -428,11 +401,9 @@ def test_s5_three_layers_with_budget(tmp_path):
         adapter.cleanup()
 
     cost_m = rel["cost"].get_metrics()
-    # 安全检查应该通过（allow），成本围栏应该触发
     perm_m = sec["permission"].get_metrics()
     assert perm_m["deny_count"] == 0
 
     assert guardrail_hit or cost_m["deny_count"] >= 1
 
-    print(f"\n✅ S5: 安全通过 + 成本围栏触发")
-    print(f"   permission deny: 0, cost deny: {cost_m['deny_count']}")
+    print(f"\nS5: permission deny=0, cost deny={cost_m['deny_count']}")
