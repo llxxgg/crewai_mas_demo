@@ -1,8 +1,0 @@
-{"timestamp": "2026-04-24T01:35:31.219019+00:00", "event": "before_turn", "session_id": "sess_20260424_013530", "turn": 1, "agent_id": "Research Analyst"}
-{"timestamp": "2026-04-24T01:35:31.219992+00:00", "event": "before_llm", "session_id": "sess_20260424_013530", "turn": 1, "agent_id": "Research Analyst", "tokens": {"input": 239, "output": 0}}
-{"timestamp": "2026-04-24T01:35:33.211932+00:00", "event": "before_tool_call", "session_id": "sess_20260424_013530", "turn": 1, "tool": "knowledge_search"}
-{"level": "INFO", "guardrail": "permission_gate", "tool": "knowledge_search", "permission": "allow", "blocked": false, "session_id": "sess_20260424_013530"}
-{"timestamp": "2026-04-24T01:35:33.213535+00:00", "event": "after_tool_call", "session_id": "sess_20260424_013530", "turn": 1, "tool": "knowledge_search"}
-{"timestamp": "2026-04-24T01:35:33.215117+00:00", "event": "before_llm", "session_id": "sess_20260424_013530", "turn": 1, "agent_id": "Research Analyst", "tokens": {"input": 647, "output": 0}}
-{"timestamp": "2026-04-24T01:35:36.084165+00:00", "event": "after_turn", "session_id": "sess_20260424_013530", "turn": 1, "agent_id": "Research Analyst", "tokens": {"input": 647, "output": 108}}
-{"level": "INFO", "guardrail": "cost_guard", "turn": 1, "input_tokens": 647, "output_tokens": 108, "estimated_cost_usd": 0.000734, "budget_usd": 0.001, "remaining_usd": 0.000266}
