@@ -30,7 +30,7 @@ print(project_root)
 sys.path.insert(0, str(project_root))
 
 from crewai import Agent, Task, Crew
-from llm import aliyun_llm
+from llm.minimax_llm import MiniMaxLLM
 from crewai_tools import ScrapeWebsiteTool, FileWriterTool, FileReadTool
 from tools import BaiduSearchTool
 
@@ -83,10 +83,9 @@ searcher = Agent(
     tools=[ScrapeWebsiteTool(), BaiduSearchTool(), FileWriterTool()],
     memory=True,  # 启用记忆功能，Agent 可以记住之前的对话内容
     max_iter=100,  # 最大迭代次数，防止 Agent 陷入无限循环
-    llm=aliyun_llm.AliyunLLM(
-        model="qwen-plus",
-        api_key=os.getenv("QWEN_API_KEY"),
-        region="cn",  # 使用 region 参数，可选值: "cn", "intl", "finance"
+    llm=MiniMaxLLM(
+        model="MiniMax-M2.7-highspeed",
+        api_key=os.getenv("MINIMAX_API_KEY"),
     ),
 )
 
