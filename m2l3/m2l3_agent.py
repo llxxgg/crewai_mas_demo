@@ -14,7 +14,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from crewai import Agent
-from llm.aliyun_llm import AliyunLLM
+from llm.minimax_llm import MiniMaxLLM
 from tools.intermediate_tool import IntermediateTool
 
 
@@ -46,10 +46,9 @@ content_strategist = Agent(
     verbose=True,
     allow_delegation=False,
     tools=[IntermediateTool()],
-    llm=AliyunLLM(
-        model="qwen-plus",
-        api_key=os.getenv("QWEN_API_KEY"),
-        region="cn",
+    llm=MiniMaxLLM(
+        model="MiniMax-M2.7-highspeed",
+        api_key=os.getenv("MINIMAX_API_KEY"),
     ),
 )
 
